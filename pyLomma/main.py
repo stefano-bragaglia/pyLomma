@@ -6,9 +6,9 @@ import logging
 import multiprocessing as mp
 import os
 import sys
-from time import time as now
 from random import choice
 from random import seed
+from time import time as now
 from typing import Generator
 from typing import NamedTuple
 from typing import Sequence
@@ -44,6 +44,9 @@ class Sample(NamedTuple):
     triple: Triple
     inverse: bool
 
+    def __hash__(self) -> int:
+        return hash(self.triple) * hash(self.inverse)
+
     def __repr__(self) -> str:
         return repr(self.triple)
 
@@ -75,6 +78,14 @@ class Path(NamedTuple):
     head: Sample
     body: list[Sample]
     expected: bool
+
+    def __hash__(self) -> int:
+        result = hash(self.head)
+        for atom in self.body:
+            result *= hash(atom)
+        result *= hash(self.expected)
+
+        return result
 
     def __len__(self) -> int:
         return len(self.body)
@@ -140,6 +151,16 @@ class Rule(NamedTuple):
     # different X groundings with respect to Rule 7.
 
     # Several different STATEGIES can be used to combine the confidence!!! Check back later on the paper!
+
+    def __hash__(self) -> int:
+        result = hash(self.head)
+        for atom in self.body:
+            result *= hash(atom)
+
+        return result
+
+    def __len__(self) -> int:
+        return len(self.body)
 
     def __repr__(self):
         if not self.body:
@@ -372,10 +393,39 @@ def main(args: ap.Namespace):
         kg = KnowledgeGraph.load(file)
         idx = Index.populate(kg)
 
-    deadline = now()
+    # path = idx.random_walk(2, "treats")
+    # print(path)
 
-    path = idx.random_walk(2, "treats")
-    print(path)
+    length, rules = 2, {}
+    deadline = now() + args.time
+    with mp.Pool(processes=args.workers) as pool:
+        while now() <= deadline:
+            result = pool.apply(session, args=(idx, length, args))
+            if result and sum(1 for r in result if r in rules) / len(result) > args.saturation:
+                length += 1
+
+            for rule, paths in result.items():
+                rules.setdefault(rule, set()).update(paths)
+
+    return rules
+
+
+def session(index: Index, length: int, args: ap.Namespace) -> dict[Rule, set[Path]]:
+    table = {}
+    deadline = now() + args.duration
+    while now() <= deadline:
+        path = index.random_walk(length, args.relation)
+        if path:
+            for rule in path.generalize():
+                table.setdefault(rule, set()).add(path)
+
+    result = {
+        r: s
+        for r, s in table.items()
+        if sum(1 for p in s if p.expected) / len(s) >= args.quality
+    }
+
+    return result
 
 
 if __name__ == '__main__':
@@ -392,6 +442,12 @@ if __name__ == '__main__':
 
     mp.freeze_support()
 
-    main(args)
+    res = main(args)
+
+    for rule, paths in res.items():
+        print(rule)
+        for path in paths:
+            print(" ", path)
+        print()
 
     print("Done.")

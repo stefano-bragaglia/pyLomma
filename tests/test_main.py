@@ -86,18 +86,77 @@ class SampleTest(unittest.TestCase):
                 assert result == expected, f"{expected} expected, but {result} found"
 
 
+class PathTest(unittest.TestCase):
+
+    def setUp(self):
+        self.path1 = Path(
+            Sample(Triple("max", "speaks", "english"), True),
+            [Sample(Triple("max", "lives", "uk"), False), Sample(Triple("uk", "lang", "english"), False)],
+            True
+        )
+        self.path2 = Path(
+            Sample(Triple("max", "speaks", "english"), True),
+            [Sample(Triple("max", "married", "eve"), False), Sample(Triple("eve", "born", "london"), False)],
+            True
+        )
+
+    def test__len(self):
+        for path, expected in [
+            (self.path1, 2),
+            (self.path2, 2),
+        ]:
+            with self.subTest("Path.__len__", path=path, expected=expected):
+                result = len(path)
+                assert result == expected, f"{expected} expected, but {result} found"
+
+    def test__repr(self):
+        for path, expected in [
+            (self.path1, "speaks(max,english) :- lives(max,uk), lang(uk,english)."),
+            (self.path2, "speaks(max,english) :- married(max,eve), born(eve,london)."),
+        ]:
+            with self.subTest("Path.__repr__", path=path, expected=expected):
+                result = repr(path)
+                assert result == expected, f"{expected} expected, but {result} found"
+
+    def test__is_cyclic(self):
+        for path, expected in [
+            (self.path1, True),
+            (self.path2, False),
+        ]:
+            with self.subTest("Path.is_cyclic", path=path, expected=expected):
+                result = path.is_cyclic()
+                assert result == expected, f"{expected} expected, but {result} found"
+
+    def test__is_valid(self):
+        for path, expected in [
+            (self.path1, True),
+            (self.path2, True),
+        ]:
+            with self.subTest("Path.is_valid", path=path, expected=expected):
+                result = path.is_valid()
+                assert result == expected, f"{expected} expected, but {result} found"
+
 class RuleTest(unittest.TestCase):
 
     def setUp(self):
-        self.path = Path(
+        self.path1 = Path(
             Sample(Triple("max", "speaks", "english"), True),
             [Sample(Triple("max", "lives", "uk"), False), Sample(Triple("uk", "lang", "english"), False)],
+            True
+        )
+        self.path2 = Path(
+            Sample(Triple("max", "speaks", "english"), True),
+            [Sample(Triple("max", "married", "eve"), False), Sample(Triple("eve", "born", "london"), False)],
             True
         )
 
         self.rule1 = Rule(Triple("X", "speaks", "Y"), [Triple("X", "lives", "A2"), Triple("A2", "lang", "Y")])
         self.rule2 = Rule(Triple("X", "speaks", "english"), [Triple("X", "lives", "A2"), Triple("A2", "lang", "english")])
         self.rule3 = Rule(Triple("max", "speaks", "Y"), [Triple("max", "lives", "A2"), Triple("A2", "lang", "Y")])
+
+        self.rule4 = Rule(Triple("X", "speaks", "english"), [Triple("X", "married", "A2"), Triple("A2", "born", "A3")])
+        self.rule5 = Rule(Triple("X", "speaks", "english"), [Triple("X", "married", "A2"), Triple("A2", "born", "london")])
+
 
     def test__repr(self):
         for rule, expected in [
@@ -109,14 +168,12 @@ class RuleTest(unittest.TestCase):
                 result = repr(rule)
                 assert result == expected, f"{expected} expected, but {result} found"
 
-
     def test__generalization(self):
         for path, subst, expected in [
-            (self.path, {"max": "X", "english": "Y"}, self.rule1),
-            (self.path, {"max": "X", "english": "english"}, self.rule2),
-            (self.path, {"max": "max", "english": "Y"}, self.rule3),
+            (self.path1, {"max": "X", "english": "Y"}, self.rule1),
+            (self.path1, {"max": "X", "english": "english"}, self.rule2),
+            (self.path1, {"max": "max", "english": "Y"}, self.rule3),
         ]:
             with self.subTest("generalize", path=path, subst=subst, expected=expected):
                 result = Rule.generalize(path, subst)
                 assert result == expected, f"{expected} expeced, but {result} found"
-

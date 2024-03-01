@@ -1,0 +1,6 @@
+source,relation,target
+alpha,beta,gamma
+delta,epsilon,phi
+compound,treats,disease
+gene,associates,disease
+compound,has_target,gene

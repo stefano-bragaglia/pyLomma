@@ -1,16 +1,18 @@
 from __future__ import annotations
 
+import argparse as ap
 import csv
 import logging
+import multiprocessing as mp
 import os
 import sys
-from datetime import datetime
+from time import time as now
 from random import choice
+from random import seed
 from typing import Generator
 from typing import NamedTuple
+from typing import Sequence
 from typing import TextIO
-
-from __init__ import __version__
 
 
 class Triple(NamedTuple):
@@ -24,6 +26,13 @@ class Triple(NamedTuple):
     def __repr__(self) -> str:
         return f"{self.relation}({self.source},{self.target})"
 
+    @staticmethod
+    def convert(value: str, subst: dict[str, str]) -> str:
+        return subst.setdefault(value, f"A{2 + sum(1 for x in subst.values() if x.startswith("A"))}")
+
+    def replace(self, subst: dict[str, str]) -> Triple:
+        return Triple(self.convert(self.source, subst), self.relation, self.convert(self.target, subst))
+
 
 class Sample(NamedTuple):
     """ A sample is a triple randomly selected during a random walk.
@@ -35,21 +44,8 @@ class Sample(NamedTuple):
     triple: Triple
     inverse: bool
 
-    @staticmethod
-    def create(candidates: list[Triple], inverse: bool = None) -> Sample:
-        """ Create a sample from a list of candidates.
-
-        If no flag 'inverse' is given, it is randomly determined.
-
-        :param candidates: a list of triples to randomly choose a candidate from
-        :param inverse: a flag indicating the direction to traverse the candidate
-        :return: a sample
-        """
-        candidate = choice(candidates)
-        if inverse is None:
-            inverse = choice([False, True])
-
-        return Sample(candidate, inverse)
+    def __repr__(self) -> str:
+        return repr(self.triple)
 
     def get_origin(self) -> str:
         """ Return the origin of the sample.
@@ -72,51 +68,30 @@ class Sample(NamedTuple):
         return self.triple.source if self.inverse else self.triple.target
 
 
-class Rule(NamedTuple):
-    """ A rule is a sequence of samples with at least 1 variable.
-
-    A lowercase string represent a constant; an uppercase string represent a variable.
-    """
-
-    head: Sample
-    body: list[Sample]
-
-
 class Path(NamedTuple):
     """ A path is a sequence of samples.
     """
 
     head: Sample
     body: list[Sample]
+    expected: bool
 
     def __len__(self) -> int:
         return len(self.body)
 
-    def __repr__(self) -> str:
-        body = ", ".join(repr(a.triple) for a in self.body)
-        if not body:
-            return f"{self.head.triple}."
+    def __repr__(self):
+        if not self.body:
+            return f"{repr(self.head)}."
 
-        return f"{self.head.triple} :- {body}."
-
-    @staticmethod
-    def create(examples: list[Triple]) -> Path:
-        """ Start a path from a list of examples and return it.
-
-        :param examples: a list of examples
-        :return: a path
-        """
-        return Path(Sample.create(examples), [])
-
-    def append(self, atom: Sample) -> None:
-        """ Append a sample to the body of the path.
-
-        :param atom: the sample to append to the body of the path
-        """
-        self.body.append(atom)
+        return f"{repr(self.head)} :- {", ".join(repr(a) for a in self.body)}."
 
     def generalize(self) -> Generator[Rule, None, None]:
-        pass
+        if self.is_cyclic():
+            yield Rule.generalize(self, {})
+        else:
+            yield Rule.generalize(self, {})
+        yield Rule.generalize(self, {})
+        yield Rule.generalize(self, {})
 
     def is_cyclic(self) -> bool:
         """ Check if the path is cyclic.
@@ -146,27 +121,35 @@ class Path(NamedTuple):
 
         return True
 
-    def next_step(self, index: Index) -> Sample | None:
-        """ Return a possible next step in a random walk for this path.
 
-        :param index: the index containing the potential candidates for the next step
-        :return: the next step or None if no next step is possible
-        """
+class Rule(NamedTuple):
+    """ A rule is a sequence of samples with at least 1 variable.
+
+    A lowercase string represent a constant; an uppercase string represent a variable.
+    """
+
+    head: Triple
+    body: list[Triple]
+
+    # The confidence of a rule is usually defined as number of body groundings,
+    # divided by the number of those body groundings that make the head true.
+
+    # THIS IS FOR COMBINING THE CONFIDENCES OF THE RULES WITH SAME HEAD (JUST VARS!!!)
+    # Note that we count in terms of head groundings, e.g., we count the number
+    # of different ⟨X, Y⟩ groundings with respect to Rule 6 and the number of
+    # different X groundings with respect to Rule 7.
+
+    # Several different STATEGIES can be used to combine the confidence!!! Check back later on the paper!
+
+    def __repr__(self):
         if not self.body:
-            node = self.head.get_destination()
-        else:
-            node = self.body[-1].get_destination()
+            return f"{repr(self.head)}."
 
-        inverse = choice([False, True])
-        if inverse:
-            triples = index.triples_by_target.get(node, [])
-        else:
-            triples = index.triples_by_source.get(node, [])
+        return f"{repr(self.head)} :- {", ".join(repr(a) for a in self.body)}."
 
-        if not triples:
-            return None
-
-        return Sample.create(triples, inverse)
+    @staticmethod
+    def generalize(path: Path, subst: dict[str, str] = None) -> Rule:
+        return Rule(path.head.triple.replace(subst), [a.triple.replace(subst) for a in path.body])
 
 
 class KnowledgeGraph(NamedTuple):
@@ -185,14 +168,14 @@ class KnowledgeGraph(NamedTuple):
         :param fp: a file-like object
         :return: the knowledge graph
         """
-        start = datetime.now()
+        start = now()
         reader = csv.DictReader(fp)
         assert reader.fieldnames == ["source", "relation", "target"], \
             "Expected a .csv file with fields: 'source', 'relation', and 'target'"
 
         facts = [Triple(**t) for t in reader]
         result = KnowledgeGraph(facts)
-        logging.info(f"  {len(facts):,} triple/s loaded in {datetime.now() - start}s")
+        logging.info(f"  {len(facts):,} triple/s loaded in {now() - start}s")
 
         return result
 
@@ -211,12 +194,12 @@ class KnowledgeGraph(NamedTuple):
 
         :param fp: a file-like object
         """
-        start = datetime.now()
+        start = now()
         facts = [t._asdict() for t in sorted(set(self.facts), key=lambda x: (x.relation, x.source, x.target))]
         writer = csv.DictWriter(fp, fieldnames=["source", "relation", "target"])
         writer.writeheader()
         writer.writerows(facts)
-        logging.info(f"  {len(facts):,} triple/s saved in {datetime.now() - start}s")
+        logging.info(f"  {len(facts):,} triple/s saved in {now() - start}s")
 
 
 class Index(NamedTuple):
@@ -227,6 +210,8 @@ class Index(NamedTuple):
     triples_by_source: dict[str, list[Triple]]
     triples_by_relation: dict[str, list[Triple]]
     triples_by_target: dict[str, list[Triple]]
+    sources_by_relation: dict[str, list[str]]
+    targets_by_relation: dict[str, list[str]]
 
     @staticmethod
     def populate(kg: KnowledgeGraph) -> Index:
@@ -235,38 +220,90 @@ class Index(NamedTuple):
         :param kg: the knowledge graph to index
         :return: the index on the knowledge graph
         """
-        start = datetime.now()
-        triples, triples_by_source, triples_by_relation, triples_by_target = [], {}, {}, {}
+        start = now()
+        result = Index([], {}, {}, {}, {}, {})
         for triple in kg.facts:
-            if triple not in triples:
-                triples_by_source.setdefault(triple.source, []).append(triple)
-                triples_by_relation.setdefault(triple.relation, []).append(triple)
-                triples_by_target.setdefault(triple.target, []).append(triple)
-                triples.append(triple)
+            if triple not in result.triples:
+                result.triples_by_source.setdefault(triple.source, []).append(triple)
+                result.triples_by_relation.setdefault(triple.relation, []).append(triple)
+                result.triples_by_target.setdefault(triple.target, []).append(triple)
+                sources = result.sources_by_relation.setdefault(triple.relation, [])
+                if triple.source not in sources:
+                    sources.append(triple.source)
+                targets = result.targets_by_relation.setdefault(triple.relation, [])
+                if triple.target not in targets:
+                    targets.append(triple.target)
+                result.triples.append(triple)
 
-        result = Index(triples, triples_by_source, triples_by_relation, triples_by_target)
-        logging.info(f"  {len(triples):,} unique triple/s ("
-                     f"{len(triples_by_source):,} source/s, "
-                     f"{len(triples_by_relation):,} relation/s, "
-                     f"{len(triples_by_target):,} target/s"
-                     f") indexed in {datetime.now() - start}s")
+        logging.info(f"  {len(result.triples):,} unique triple/s ("
+                     f"{len(result.triples_by_source):,} source/s, "
+                     f"{len(result.triples_by_relation):,} relation/s, "
+                     f"{len(result.triples_by_target):,} target/s"
+                     f") indexed in {now() - start}s")
 
         return result
 
-    def sample(self, examples: list[Triple], length: int) -> Path | None:
-        """ Return a path of given length by sampling an example and performing a random walk.
+    def sample(self, relation: str = None) -> tuple[Sample, bool]:
+        """ Sample a triple from the training set and return it.
 
-        :param examples: the examples to sample
+        :param relation: the desired relation
+        :return: the sampled triple and a boolean flag telling if expected
+        """
+        if relation:
+            sources = self.sources_by_relation.get(relation, [])
+            relations = []
+            targets = self.targets_by_relation.get(relation, [])
+        else:
+            sources = list(self.triples_by_source)
+            relations = list(self.triples_by_relation)
+            targets = list(self.triples_by_target)
+        if not sources or not targets or not relation and not relations:
+            raise ValueError("No example/s found")
+
+        triple = Triple(choice(sources), relation or choice(relations), choice(targets))
+        inverse = choice([False, True])
+        expected = triple in self.triples_by_relation.get(relation, self.triples)
+
+        return Sample(triple, inverse), expected
+
+    def next_step(self, path: Path) -> Sample | None:
+        """
+        Return a possible next step of a random walk for the path.
+
+        :param path: the path to extend
+        :return: the next step or None if no next step is possible
+        """
+        if not path.body:
+            node = path.head.get_destination()
+        else:
+            node = path.body[-1].get_destination()
+
+        inverse = choice([False, True])
+        if inverse:
+            triples = self.triples_by_target.get(node, [])
+        else:
+            triples = self.triples_by_source.get(node, [])
+
+        if not triples:
+            return None
+
+        return Sample(choice(triples), inverse)
+
+    def random_walk(self, length: int, relation: str = None) -> Path | None:
+        """ Return a path by performing a random walk from an example.
+
         :param length: the desired length for the path (min 2)
+        :param relation: the optional relation to learn (if missing, learn any relation)
         :return: a sampled path or None
         """
-        path = Path.create(examples)
+        head, expected = self.sample(relation)
+        path = Path(head, [], expected)
         while len(path) < length:
-            atom = path.next_step(self)
+            atom = self.next_step(path)
             if not atom:
                 return None
 
-            path.append(atom)
+            path.body.append(atom)
             if not path.is_valid():
                 return None
 
@@ -295,20 +332,66 @@ def setup_logs() -> None:
     logger.setLevel(level=logging.DEBUG)
 
 
+def parse_args(default: Sequence[str] = None) -> ap.Namespace:
+    """Parse arguments from the command line and return them.
+
+    If a `default` sequence of strings is given, the arguments are parsed from there.
+
+    :param default: the optional sequence of strings from where to parse the arguments
+    :return: the parsed arguments
+    """
+    parser = ap.ArgumentParser(description=f"Python implementation of AnyBURL "
+                                           f"(https://web.informatik.uni-mannheim.de/AnyBURL/).")
+    parser.add_argument("--random-state", "-n", required=False, default=None, type=int,
+                        help="The seed to set the random state to")
+    parser.add_argument("--input", "-i", required=True, type=str, help="The input .csv file with triples <src,rel,tgt>")
+    parser.add_argument("--quality", "-q", required=True, type=float, help="The desired quality on rules confidence")
+    parser.add_argument("--saturation", "-s", required=True, type=float, help="The saturation to increase rules length")
+    parser.add_argument("--duration", "-d", required=True, type=float, help="The duration in seconds of each stint")
+    parser.add_argument("--time", "-t", required=True, type=float, help="The duration in seconds of the experiment")
+    parser.add_argument("--workers", "-w", required=False, default=mp.cpu_count(), type=int,
+                        help="The number of workers")
+    parser.add_argument("--relation", "-r", required=False, default=None, type=str,
+                        help="The type of relation to learn")
+
+    args = parser.parse_args(args=default)
+    logging.debug(f"Parsed args: {args}")
+
+    return args
+
+
+def main(args: ap.Namespace):
+    logging.info(f"pyLomma")
+
+    if args.random_state:
+        logging.info(f"\nRandom-state set to {args.random_state}")
+        seed(args.random_state)
+
+    logging.info(f"\nLoading '{args.input}'...")
+    with open(args.input, "r") as file:
+        kg = KnowledgeGraph.load(file)
+        idx = Index.populate(kg)
+
+    deadline = now()
+
+    path = idx.random_walk(2, "treats")
+    print(path)
+
+
 if __name__ == '__main__':
     setup_logs()
+    args = parse_args([
+        "-n", "42",
+        "-i", "../data/graph.csv",
+        "-q", "0.25",
+        "-s", "0.5",
+        "-d", "10",
+        "-t", "30",
+        # "-w", "2",
+    ])
 
-    logging.info(f"pyLomma {__version__}")
+    mp.freeze_support()
 
-    filename = "../data/graph.csv"
-    logging.info(f"\nLoading '{filename}'...")
-    with open(filename, "r") as file:
-        graph = KnowledgeGraph.load(file)
+    main(args)
 
-    index = Index.populate(graph)
-    examples = index.triples_by_relation.get("treats", index.triples)
-    length = 2
-    path = index.sample(examples, length)
-
-    print(path)
     print("Done.")

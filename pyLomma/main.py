@@ -96,13 +96,45 @@ class Path(NamedTuple):
 
         return f"{repr(self.head)} :- {", ".join(repr(a) for a in self.body)}."
 
+    def _c_subst(self) -> dict[str, str]:
+        return {
+            self.head.triple.source: "Y" if self.head.inverse else "X",
+            self.head.triple.target: "X" if self.head.inverse else "Y",
+        }
+
+    def _ac1x_subst(self) -> dict[str, str]:
+        return {
+            self.head.triple.source: self.head.triple.source if self.head.inverse else "X",
+            self.head.triple.target: "X" if self.head.inverse else self.head.triple.target,
+        }
+
+    def _ac1y_subst(self) -> dict[str, str]:
+        return {
+            self.head.triple.source: "Y" if self.head.inverse else self.head.triple.source,
+            self.head.triple.target: self.head.triple.target if self.head.inverse else "X",
+        }
+
+    def _ac1_subst(self) -> dict[str, str]:
+        return {
+            self.head.triple.source: self.head.triple.source if self.head.inverse else "X",
+            self.head.triple.target: "X" if self.head.inverse else self.head.triple.target,
+            self.body[-1].get_destination(): self.body[-1].get_destination(),
+        }
+
+    def _ac2_subst(self) -> dict[str, str]:
+        return {
+            self.head.triple.source: self.head.triple.source if self.head.inverse else "X",
+            self.head.triple.target: "X" if self.head.inverse else self.head.triple.target,
+        }
+
     def generalize(self) -> Generator[Rule, None, None]:
         if self.is_cyclic():
-            yield Rule.generalize(self, {})
+            yield Rule.generalize(self, self._c_subst())
+            yield Rule.generalize(self, self._ac1x_subst())
+            yield Rule.generalize(self, self._ac1y_subst())
         else:
-            yield Rule.generalize(self, {})
-        yield Rule.generalize(self, {})
-        yield Rule.generalize(self, {})
+            yield Rule.generalize(self, self._ac1_subst())
+            yield Rule.generalize(self, self._ac2_subst())
 
     def is_cyclic(self) -> bool:
         """ Check if the path is cyclic.
@@ -396,16 +428,31 @@ def main(args: ap.Namespace):
     # path = idx.random_walk(2, "treats")
     # print(path)
 
-    length, rules = 2, {}
+    num, length, rules = 0, 2, {}
     deadline = now() + args.time
     with mp.Pool(processes=args.workers) as pool:
-        while now() <= deadline:
+        while True:
             result = pool.apply(session, args=(idx, length, args))
             if result and sum(1 for r in result if r in rules) / len(result) > args.saturation:
                 length += 1
 
+            num += 1
+            with open(f"rules_{num}.pl", "w") as file:
+                for rule, paths in result.items():
+                    file.write(f"{rule.head}"
+                               f" : {sum(1 for p in paths if p.expected)}"
+                               f" / {len(paths)}"
+                               f" :- {", ".join(repr(a) for a in rule.body)}.\n")
+
             for rule, paths in result.items():
                 rules.setdefault(rule, set()).update(paths)
+
+            current = now()
+            logging.info(
+                f"{min(100, 100 - 100 * (deadline - current) / args.time):6.2f}% - {len(rules):,} rule/s found")
+
+            if current >= deadline:
+                break
 
     return rules
 
@@ -437,6 +484,7 @@ if __name__ == '__main__':
         "-s", "0.5",
         "-d", "10",
         "-t", "30",
+        "-r", "treats",
         # "-w", "2",
     ])
 
@@ -444,10 +492,17 @@ if __name__ == '__main__':
 
     res = main(args)
 
-    for rule, paths in res.items():
-        print(rule)
-        for path in paths:
-            print(" ", path)
-        print()
+    with open(f"rules.pl", "w") as file:
+        for rule, paths in sorted(res.items(),
+                                  key=lambda x: (-sum(1 for p in x[1] if p.expected) / len(x[1]), repr(x[0]))):
+            print(f"{rule.head}"
+                  f" : {sum(1 for p in paths if p.expected)}"
+                  f" / {len(paths)}"
+                  f" :- {", ".join(repr(a) for a in rule.body)}.", file=file)
+            # for path in sorted(paths, key=lambda x: repr(x)):
+            #     print(f"% {path.head.triple} :"
+            #           f" {path.expected} :-"
+            #           f" {", ".join(repr(a.triple) for a in path.body)}.", file=file)
+            # print(file=file)
 
-    print("Done.")
+    logging.info("\nDone.")

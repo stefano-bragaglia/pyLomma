@@ -1,6 +1,6 @@
 import unittest
 
-from main import Path
+from main import RandomWalk
 from main import Rule
 from main import Sample
 from pyLomma.main import Triple
@@ -89,12 +89,12 @@ class SampleTest(unittest.TestCase):
 class PathTest(unittest.TestCase):
 
     def setUp(self):
-        self.path1 = Path(
+        self.path1 = RandomWalk(
             Sample(Triple("max", "speaks", "english"), True),
             [Sample(Triple("max", "lives", "uk"), False), Sample(Triple("uk", "lang", "english"), False)],
             True
         )
-        self.path2 = Path(
+        self.path2 = RandomWalk(
             Sample(Triple("max", "speaks", "english"), True),
             [Sample(Triple("max", "married", "eve"), False), Sample(Triple("eve", "born", "london"), False)],
             True
@@ -139,12 +139,12 @@ class PathTest(unittest.TestCase):
 class RuleTest(unittest.TestCase):
 
     def setUp(self):
-        self.path1 = Path(
+        self.path1 = RandomWalk(
             Sample(Triple("max", "speaks", "english"), True),
             [Sample(Triple("max", "lives", "uk"), False), Sample(Triple("uk", "lang", "english"), False)],
             True
         )
-        self.path2 = Path(
+        self.path2 = RandomWalk(
             Sample(Triple("max", "speaks", "english"), True),
             [Sample(Triple("max", "married", "eve"), False), Sample(Triple("eve", "born", "london"), False)],
             True
@@ -175,5 +175,5 @@ class RuleTest(unittest.TestCase):
             (self.path1, {"max": "max", "english": "Y"}, self.rule3),
         ]:
             with self.subTest("generalize", path=path, subst=subst, expected=expected):
-                result = Rule.generalize(path, subst)
+                result = Rule.create(path, subst)
                 assert result == expected, f"{expected} expeced, but {result} found"

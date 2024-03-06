@@ -41,9 +41,12 @@ class Triple(NamedTuple):
         result = {}
         if self.source[0].isupper():
             result.setdefault(self.source, const.source)
+        else:
+            result.setdefault(self.source, self.source)
         if self.target[0].isupper():
             result.setdefault(self.target, const.target)
-
+        else:
+            result.setdefault(self.target, self.target)
         return result
 
 
@@ -88,7 +91,31 @@ class Sample(NamedTuple):
 
 
 class Path(NamedTuple):
-    """ A path is a sequence of samples.
+    """ A path is a sequence of consecutive triples.
+    """
+    head: Triple
+    body: list[Triple]
+
+    def __hash__(self) -> int:
+        result = hash(self.head)
+        for atom in self.body:
+            result *= hash(atom)
+
+        return result
+
+    def __len__(self) -> int:
+        return len(self.body)
+
+    def __repr__(self):
+        if not self.body:
+            return f"{repr(self.head)}."
+
+        return f"{repr(self.head)} :- {", ".join(repr(a) for a in self.body)}."
+
+
+class RandomWalk(NamedTuple):
+    """ A random walk is a sequence of consecutive sampled triples (samples).
+    A random walk can be generalized in rules of type C, AC1, and AC2.
     """
 
     head: Sample
@@ -145,12 +172,12 @@ class Path(NamedTuple):
 
     def generalize(self) -> Generator[Rule, None, None]:
         if self.is_cyclic():
-            yield Rule.generalize(self, self._c_subst())
-            yield Rule.generalize(self, self._ac1x_subst())
-            yield Rule.generalize(self, self._ac1y_subst())
+            yield Rule.create(self, self._c_subst())
+            yield Rule.create(self, self._ac1x_subst())
+            yield Rule.create(self, self._ac1y_subst())
         else:
-            yield Rule.generalize(self, self._ac1_subst())
-            yield Rule.generalize(self, self._ac2_subst())
+            yield Rule.create(self, self._ac1_subst())
+            yield Rule.create(self, self._ac2_subst())
 
     def is_cyclic(self) -> bool:
         """ Check if the path is cyclic.
@@ -187,8 +214,8 @@ class Rule(NamedTuple):
     A lowercase string represent a constant; an uppercase string represent a variable.
     """
 
-    head: Sample
-    body: list[Sample]
+    head: Triple
+    body: list[Triple]
 
     # The confidence of a rule is usually defined as number of body groundings,
     # divided by the number of those body groundings that make the head true.
@@ -217,8 +244,14 @@ class Rule(NamedTuple):
         return f"{repr(self.head)} :- {", ".join(repr(a) for a in self.body)}."
 
     @staticmethod
-    def generalize(path: Path, subst: dict[str, str] = None) -> Rule:
-        return Rule(path.head.replace(subst), [a.replace(subst) for a in path.body])
+    def create(path: RandomWalk, subst: dict[str, str] = None) -> Rule:
+        return Rule(path.head.triple.replace(subst), [a.triple.replace(subst) for a in path.body])
+
+    def replace(self, subst: dict[str, str]) -> RandomWalk:
+        return RandomWalk(
+            self.head.replace(subst),
+            [atom.replace(subst) for atom in self.body]
+        )
 
 
 class KnowledgeGraph(NamedTuple):
@@ -334,7 +367,7 @@ class Index(NamedTuple):
 
         return Sample(triple, inverse), expected
 
-    def next_step(self, path: Path) -> Sample | None:
+    def next_step(self, path: RandomWalk) -> Sample | None:
         """
         Return a possible next step of a random walk for the path.
 
@@ -357,7 +390,7 @@ class Index(NamedTuple):
 
         return Sample(choice(triples), inverse)
 
-    def random_walk(self, length: int, relation: str = None) -> Path | None:
+    def random_walk(self, length: int, relation: str = None) -> RandomWalk | None:
         """ Return a path by performing a random walk from an example.
 
         :param length: the desired length for the path (min 2)
@@ -365,7 +398,7 @@ class Index(NamedTuple):
         :return: a sampled path or None
         """
         head, expected = self.sample(relation)
-        path = Path(head, [], expected)
+        path = RandomWalk(head, [], expected)
         while len(path) < length:
             atom = self.next_step(path)
             if not atom:
@@ -390,20 +423,87 @@ class Index(NamedTuple):
         for triple in triples:
             yield triple
 
-    def query(self, rule: Rule, subst: dict[str, str] = None, pos: int = None) -> Generator[Triple, None, None]:
+    def query(self, rule: Rule, subst: dict[str, str] = None, pos: int = None) -> Generator[RandomWalk, None, None]:
         pos = pos or 0
         if pos >= len(rule):
-            yield Triple(
-                subst.get(rule.head.triple.source, rule.head.triple.source),
-                rule.head.triple.relation,
-                subst.get(rule.head.triple.target, rule.head.triple.target),
-            )
+            yield rule.replace(subst)
         else:
             subst = subst or {}
             for triple in self.find(rule.body[pos].triple):
-                if pos <= 0 or rule.body[pos - 1].get_destination() == rule.body[pos].get_origin():
-                    subst.update(rule.body[pos].triple.get_subst(triple))
-                    yield from self.query(rule, subst, pos + 1)
+                triple = triple.replace(subst)
+                # if pos <= 0 or rule.body[pos - 1].get_destination() == rule.body[pos].get_origin():
+                subst.update(rule.body[pos].triple.get_subst(triple))
+                yield from self.query(rule, subst, pos + 1)
+
+
+class Codex:
+
+    @staticmethod
+    def discover(num: int, index: Index, length: int, args: ap.Namespace) -> Codex:
+        rules = Codex()
+        deadline = now() + args.duration
+        while now() <= deadline:
+            path = index.random_walk(length, args.relation)
+            rules.add(path)
+
+        filename = f"rules_{num}.pl"
+        logging.debug(f"Saving {len(rules)} rule/s to '{filename}'...")
+        with open(filename, "w") as file:
+            rules.dump(file)
+
+        return rules.filter(args.quality)
+
+    def __init__(self, rules: dict[Rule, list[RandomWalk]] = None):
+        self.rules = rules or {}
+
+    def __len__(self) -> int:
+        return len(self.rules)
+
+    def add(self, path: RandomWalk) -> None:
+        if path:
+            for rule in path.generalize():
+                paths = self.rules.setdefault(rule, [])
+                if path not in paths:
+                    paths.append(path)
+
+    @staticmethod
+    def count(paths: list[RandomWalk]) -> int:
+        return sum(1 for p in paths if p.expected)
+
+    def filter(self, min_quality: float) -> Codex:
+        quality_rules = {r: l for r, l in self.rules.items() if self.count(l) / len(l) >= min_quality}
+
+        return Codex(quality_rules)
+
+    def dump(self, fp: TextIO, key=None) -> None:
+        if key:
+            items = sorted(self.rules.items(), key=key)
+        else:
+            items = self.rules.items()
+        for rule, paths in items:
+            fp.write(f"{rule.head} : {self.count(paths)} / {len(paths)} :- {", ".join(repr(a) for a in rule.body)}.\n")
+
+    def evaluate(self):
+        result = {}
+        for rule, paths in self.rules.items():
+            confidence = sum(1 for p in paths if p.expected) / len(paths)
+            for ground in idx.query(rule):
+                result.setdefault(ground.head, {}).setdefault(ground, []).append(confidence)
+
+        return result
+
+    def get_saturation(self, result: Codex) -> float:
+        if not result.rules:
+            return 0.0
+
+        return sum(1 for r in result.rules if r in self.rules) / len(result.rules)
+
+    def update(self, other: Codex) -> None:
+        for rule, paths in other.rules.items():
+            repository = self.rules.setdefault(rule, [])
+            for path in paths:
+                if path not in repository:
+                    repository.append(path)
 
 
 def setup_logs() -> None:
@@ -427,6 +527,22 @@ def setup_logs() -> None:
     logger.addHandler(hdlr=file_handler)
     logger.setLevel(level=logging.DEBUG)
 
+
+class Strategy:
+
+    def evaluate(self, index: Index, codex: Codex):
+        result = {}
+        for rule in codex.rules:
+            for ground in index.query(rule):
+                result.setdefault(ground.head, {}).setdefault(ground, )
+
+
+        raise NotImplementedError()
+
+class Maximum(Strategy):
+
+    def evaluate(self):
+        pass
 
 def parse_args(default: Sequence[str] = None) -> ap.Namespace:
     """Parse arguments from the command line and return them.
@@ -456,7 +572,7 @@ def parse_args(default: Sequence[str] = None) -> ap.Namespace:
     return args
 
 
-def main(args: ap.Namespace):
+def main(args: ap.Namespace) -> Codex:
     logging.info(f"pyLomma")
 
     if args.random_state:
@@ -468,55 +584,24 @@ def main(args: ap.Namespace):
         kg = KnowledgeGraph.load(file)
         idx = Index.populate(kg)
 
-    num, length, rules = 0, 2, {}
+    logging.info(f"\n[{0.0:6.2f}%] {0:,} rule/s found")
+
+    num, length, rules = 0, 2, Codex()
     deadline = now() + args.time
     with mp.Pool(processes=args.workers) as pool:
         while True:
-            result = pool.apply(session, args=(idx, length, args))
-            if result and sum(1 for r in result if r in rules) / len(result) > args.saturation:
+            num += 1
+            result = pool.apply(Codex.discover, args=(num, idx, length, args))
+            if rules.get_saturation(result) >= args.saturation:
                 length += 1
 
-            num += 1
-            with open(f"rules_{num}.pl", "w") as file:
-                for rule, paths in result.items():
-                    file.write(f"{rule.head}"
-                               f" : {sum(1 for p in paths if p.expected)}"
-                               f" / {len(paths)}"
-                               f" :- {", ".join(repr(a) for a in rule.body)}.\n")
-
-            for rule, paths in result.items():
-                rules.setdefault(rule, set()).update(paths)
-
-            current = now()
-            logging.info(
-                f"{min(100, 100 - 100 * (deadline - current) / args.time):6.2f}% - {len(rules):,} rule/s found")
-
-            if current >= deadline:
+            rules.update(result)
+            t = now()
+            logging.info(f"[{min(100, 100 - 100 * (deadline - t) / args.time):6.2f}%] {len(rules):,} rule/s found")
+            if t >= deadline:
                 break
 
-        rule = list(rules.keys())[0]
-        print(rule)
-        print(sorted(set(idx.query(rule))))
-
     return rules
-
-
-def session(index: Index, length: int, args: ap.Namespace) -> dict[Rule, set[Path]]:
-    table = {}
-    deadline = now() + args.duration
-    while now() <= deadline:
-        path = index.random_walk(length, args.relation)
-        if path:
-            for rule in path.generalize():
-                table.setdefault(rule, set()).add(path)
-
-    result = {
-        r: s
-        for r, s in table.items()
-        if sum(1 for p in s if p.expected) / len(s) >= args.quality
-    }
-
-    return result
 
 
 if __name__ == '__main__':
@@ -536,6 +621,7 @@ if __name__ == '__main__':
 
     res = main(args)
 
+    ##### Call it "repository"?
     ### Nice to have a place where to store rules, the triples that they can predict, the triples that were sampled
     # notice that all these triples can be used to compute the confidence on the rule
     ### the rules can be sorted by confidence
@@ -543,17 +629,14 @@ if __name__ == '__main__':
     ### use strategies to combine them: maximum, noisyor
     ### for each triple, get all the paths the rules that produce it can produce, combine them in a graph
 
-    with open(f"rules.pl", "w") as file:
-        for rule, paths in sorted(res.items(),
-                                  key=lambda x: (-sum(1 for p in x[1] if p.expected) / len(x[1]), repr(x[0]))):
-            print(f"{rule.head}"
-                  f" : {sum(1 for p in paths if p.expected)}"
-                  f" / {len(paths)}"
-                  f" :- {", ".join(repr(a) for a in rule.body)}.", file=file)
-            # for path in sorted(paths, key=lambda x: repr(x)):
-            #     print(f"% {path.head.triple} :"
-            #           f" {path.expected} :-"
-            #           f" {", ".join(repr(a.triple) for a in path.body)}.", file=file)
-            # print(file=file)
+    # Might require to rename things...
+    ## Path being just a ground rule (triple, list[triple] for head and body)
+    ## Random Walk (when each triple has an inverse)
+    ## ???
+
+    filename = "rules.pl"
+    logging.info(f"\nSaving {len(res)} rule/s to '{filename}'...")
+    with open(filename, "w") as file:
+        res.dump(file, key=lambda x: (-sum(1 for p in x[1] if p.expected) / len(x[1]), repr(x[0])))
 
     logging.info("\nDone.")

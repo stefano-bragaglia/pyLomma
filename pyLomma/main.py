@@ -15,6 +15,10 @@ from typing import Sequence
 from typing import TextIO
 
 
+def is_constant(value: str) -> bool:
+    return value[0].islower()
+
+
 class Triple(NamedTuple):
     """ A (semantic) triple contains a subject or 'source', a predicate or 'relation', and an object or 'destination'.
     """
@@ -32,6 +36,15 @@ class Triple(NamedTuple):
 
     def replace(self, subst: dict[str, str]) -> Triple:
         return Triple(self.convert(self.source, subst), self.relation, self.convert(self.target, subst))
+
+    def get_subst(self, const: Triple) -> dict[str, str]:
+        result = {}
+        if self.source[0].isupper():
+            result.setdefault(self.source, const.source)
+        if self.target[0].isupper():
+            result.setdefault(self.target, const.target)
+
+        return result
 
 
 class Sample(NamedTuple):
@@ -70,6 +83,9 @@ class Sample(NamedTuple):
         """
         return self.triple.source if self.inverse else self.triple.target
 
+    def replace(self, subst: dict[str, str]) -> Sample:
+        return Sample(self.triple.replace(subst), self.inverse)
+
 
 class Path(NamedTuple):
     """ A path is a sequence of samples.
@@ -98,33 +114,33 @@ class Path(NamedTuple):
 
     def _c_subst(self) -> dict[str, str]:
         return {
-            self.head.triple.source: "Y" if self.head.inverse else "X",
-            self.head.triple.target: "X" if self.head.inverse else "Y",
+            self.head.get_origin(): "Y",
+            self.head.get_destination(): "X",
         }
 
     def _ac1x_subst(self) -> dict[str, str]:
         return {
-            self.head.triple.source: self.head.triple.source if self.head.inverse else "X",
-            self.head.triple.target: "X" if self.head.inverse else self.head.triple.target,
+            self.head.get_origin(): self.head.get_origin(),
+            self.head.get_destination(): "X",
         }
 
     def _ac1y_subst(self) -> dict[str, str]:
         return {
-            self.head.triple.source: "Y" if self.head.inverse else self.head.triple.source,
-            self.head.triple.target: self.head.triple.target if self.head.inverse else "X",
+            self.head.get_origin(): "Y",
+            self.head.get_destination(): self.head.get_destination(),
         }
 
     def _ac1_subst(self) -> dict[str, str]:
         return {
-            self.head.triple.source: self.head.triple.source if self.head.inverse else "X",
-            self.head.triple.target: "X" if self.head.inverse else self.head.triple.target,
+            self.head.get_origin(): self.head.get_origin(),
+            self.head.get_destination(): "X",
             self.body[-1].get_destination(): self.body[-1].get_destination(),
         }
 
     def _ac2_subst(self) -> dict[str, str]:
         return {
-            self.head.triple.source: self.head.triple.source if self.head.inverse else "X",
-            self.head.triple.target: "X" if self.head.inverse else self.head.triple.target,
+            self.head.get_origin(): self.head.get_origin(),
+            self.head.get_destination(): "X",
         }
 
     def generalize(self) -> Generator[Rule, None, None]:
@@ -171,8 +187,8 @@ class Rule(NamedTuple):
     A lowercase string represent a constant; an uppercase string represent a variable.
     """
 
-    head: Triple
-    body: list[Triple]
+    head: Sample
+    body: list[Sample]
 
     # The confidence of a rule is usually defined as number of body groundings,
     # divided by the number of those body groundings that make the head true.
@@ -182,7 +198,7 @@ class Rule(NamedTuple):
     # of different ⟨X, Y⟩ groundings with respect to Rule 6 and the number of
     # different X groundings with respect to Rule 7.
 
-    # Several different STATEGIES can be used to combine the confidence!!! Check back later on the paper!
+    # Several different STRATEGIES can be used to combine the confidence!!! Check back later on the paper!
 
     def __hash__(self) -> int:
         result = hash(self.head)
@@ -202,7 +218,7 @@ class Rule(NamedTuple):
 
     @staticmethod
     def generalize(path: Path, subst: dict[str, str] = None) -> Rule:
-        return Rule(path.head.triple.replace(subst), [a.triple.replace(subst) for a in path.body])
+        return Rule(path.head.replace(subst), [a.replace(subst) for a in path.body])
 
 
 class KnowledgeGraph(NamedTuple):
@@ -260,11 +276,14 @@ class Index(NamedTuple):
     """
 
     triples: list[Triple]
-    triples_by_source: dict[str, list[Triple]]
-    triples_by_relation: dict[str, list[Triple]]
-    triples_by_target: dict[str, list[Triple]]
-    sources_by_relation: dict[str, list[str]]
-    targets_by_relation: dict[str, list[str]]
+    by_source: dict[str, list[Triple]]
+    by_relation: dict[str, list[Triple]]
+    by_target: dict[str, list[Triple]]
+    # sources_by_relation: dict[str, list[str]]
+    # targets_by_relation: dict[str, list[str]]
+
+    by_relation_source: dict[str, dict[str, list[Triple]]]
+    by_relation_target: dict[str, dict[str, list[Triple]]]
 
     @staticmethod
     def populate(kg: KnowledgeGraph) -> Index:
@@ -277,21 +296,17 @@ class Index(NamedTuple):
         result = Index([], {}, {}, {}, {}, {})
         for triple in kg.facts:
             if triple not in result.triples:
-                result.triples_by_source.setdefault(triple.source, []).append(triple)
-                result.triples_by_relation.setdefault(triple.relation, []).append(triple)
-                result.triples_by_target.setdefault(triple.target, []).append(triple)
-                sources = result.sources_by_relation.setdefault(triple.relation, [])
-                if triple.source not in sources:
-                    sources.append(triple.source)
-                targets = result.targets_by_relation.setdefault(triple.relation, [])
-                if triple.target not in targets:
-                    targets.append(triple.target)
+                result.by_source.setdefault(triple.source, []).append(triple)
+                result.by_relation.setdefault(triple.relation, []).append(triple)
+                result.by_target.setdefault(triple.target, []).append(triple)
+                result.by_relation_source.setdefault(triple.relation, {}).setdefault(triple.source, []).append(triple)
+                result.by_relation_target.setdefault(triple.relation, {}).setdefault(triple.target, []).append(triple)
                 result.triples.append(triple)
 
         logging.info(f"  {len(result.triples):,} unique triple/s ("
-                     f"{len(result.triples_by_source):,} source/s, "
-                     f"{len(result.triples_by_relation):,} relation/s, "
-                     f"{len(result.triples_by_target):,} target/s"
+                     f"{len(result.by_source):,} source/s, "
+                     f"{len(result.by_relation):,} relation/s, "
+                     f"{len(result.by_target):,} target/s"
                      f") indexed in {now() - start}s")
 
         return result
@@ -303,19 +318,19 @@ class Index(NamedTuple):
         :return: the sampled triple and a boolean flag telling if expected
         """
         if relation:
-            sources = self.sources_by_relation.get(relation, [])
+            sources = list(self.by_relation_source.get(relation, {}).keys())
             relations = []
-            targets = self.targets_by_relation.get(relation, [])
+            targets = list(self.by_relation_target.get(relation, {}).keys())
         else:
-            sources = list(self.triples_by_source)
-            relations = list(self.triples_by_relation)
-            targets = list(self.triples_by_target)
+            sources = list(self.by_source)
+            relations = list(self.by_relation)
+            targets = list(self.by_target)
         if not sources or not targets or not relation and not relations:
             raise ValueError("No example/s found")
 
         triple = Triple(choice(sources), relation or choice(relations), choice(targets))
         inverse = choice([False, True])
-        expected = triple in self.triples_by_relation.get(relation, self.triples)
+        expected = triple in self.by_relation.get(relation, self.triples)
 
         return Sample(triple, inverse), expected
 
@@ -333,9 +348,9 @@ class Index(NamedTuple):
 
         inverse = choice([False, True])
         if inverse:
-            triples = self.triples_by_target.get(node, [])
+            triples = self.by_target.get(node, [])
         else:
-            triples = self.triples_by_source.get(node, [])
+            triples = self.by_source.get(node, [])
 
         if not triples:
             return None
@@ -361,6 +376,34 @@ class Index(NamedTuple):
                 return None
 
         return path
+
+    def find(self, atom: Triple) -> Generator[Triple, None, None]:
+        if is_constant(atom.source):
+            triples = self.by_relation_source.get(atom.relation, {}).get(atom.source, [])
+            if is_constant(atom.target):
+                triples = [atom] if atom in triples else []
+        elif is_constant(atom.target):
+            triples = self.by_relation_target.get(atom.relation, {}).get(atom.target, [])
+        else:
+            triples = self.by_relation.get(atom.relation, [])
+
+        for triple in triples:
+            yield triple
+
+    def query(self, rule: Rule, subst: dict[str, str] = None, pos: int = None) -> Generator[Triple, None, None]:
+        pos = pos or 0
+        if pos >= len(rule):
+            yield Triple(
+                subst.get(rule.head.triple.source, rule.head.triple.source),
+                rule.head.triple.relation,
+                subst.get(rule.head.triple.target, rule.head.triple.target),
+            )
+        else:
+            subst = subst or {}
+            for triple in self.find(rule.body[pos].triple):
+                if pos <= 0 or rule.body[pos - 1].get_destination() == rule.body[pos].get_origin():
+                    subst.update(rule.body[pos].triple.get_subst(triple))
+                    yield from self.query(rule, subst, pos + 1)
 
 
 def setup_logs() -> None:
@@ -425,9 +468,6 @@ def main(args: ap.Namespace):
         kg = KnowledgeGraph.load(file)
         idx = Index.populate(kg)
 
-    # path = idx.random_walk(2, "treats")
-    # print(path)
-
     num, length, rules = 0, 2, {}
     deadline = now() + args.time
     with mp.Pool(processes=args.workers) as pool:
@@ -453,6 +493,10 @@ def main(args: ap.Namespace):
 
             if current >= deadline:
                 break
+
+        rule = list(rules.keys())[0]
+        print(rule)
+        print(sorted(set(idx.query(rule))))
 
     return rules
 
@@ -504,5 +548,7 @@ if __name__ == '__main__':
             #           f" {path.expected} :-"
             #           f" {", ".join(repr(a.triple) for a in path.body)}.", file=file)
             # print(file=file)
+
+    # TODO: fix generalization: treats(X,d1) : 1 / 2 :- associates(A2,d1), participates(A2,p1).
 
     logging.info("\nDone.")

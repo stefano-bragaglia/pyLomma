@@ -536,6 +536,13 @@ if __name__ == '__main__':
 
     res = main(args)
 
+    ### Nice to have a place where to store rules, the triples that they can predict, the triples that were sampled
+    # notice that all these triples can be used to compute the confidence on the rule
+    ### the rules can be sorted by confidence
+    ### for each predictable triple, consider the confidence of all the rules that produce it
+    ### use strategies to combine them: maximum, noisyor
+    ### for each triple, get all the paths the rules that produce it can produce, combine them in a graph
+
     with open(f"rules.pl", "w") as file:
         for rule, paths in sorted(res.items(),
                                   key=lambda x: (-sum(1 for p in x[1] if p.expected) / len(x[1]), repr(x[0]))):
@@ -548,7 +555,5 @@ if __name__ == '__main__':
             #           f" {path.expected} :-"
             #           f" {", ".join(repr(a.triple) for a in path.body)}.", file=file)
             # print(file=file)
-
-    # TODO: fix generalization: treats(X,d1) : 1 / 2 :- associates(A2,d1), participates(A2,p1).
 
     logging.info("\nDone.")

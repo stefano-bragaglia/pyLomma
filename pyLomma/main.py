@@ -5,7 +5,9 @@ import csv
 import logging
 import multiprocessing as mp
 import os
+import re
 import sys
+from math import prod
 from random import choice
 from random import seed
 from time import time as now
@@ -17,6 +19,99 @@ from typing import TextIO
 
 def is_constant(value: str) -> bool:
     return value[0].islower()
+
+
+class Parser:
+    """ Naive implementation of a PEG parser.
+    """
+
+    def __init__(self):
+        self.pos = 0
+        self.content = None
+
+    def expect(self, pattern) -> str | None:
+        content = self.content[self.pos:]
+        found = re.match(r"\s*", content)
+        if found:
+            self.pos += len(found.group(0))
+
+        if pattern:
+            content = self.content[self.pos:]
+            found = re.match(pattern, content)
+            if found:
+                result = found.group(0)
+                self.pos += len(result)
+                return result
+
+        return None
+
+    def mark(self) -> int:
+        return self.pos
+
+    def reset(self, pos: int) -> None:
+        self.pos = pos
+
+    def parse(self, content: str) -> Path:
+        self.pos = 0
+        self.content = content
+
+        result = self.start()
+        self.expect(None)
+        assert self.pos == len(self.content)
+
+        return result
+
+    def start(self) -> any:
+        raise NotImplementedError()
+
+
+class PathParser(Parser):
+    """ Naive implementation of a PEG parser for Paths (no dependencies).
+    """
+
+    CONSTANT = r"[_a-z][a-zA-Z0-9_-]*"
+    NUMBER = r"[0-9]+"
+    VARIABLE = r"[A-Z][a-zA-Z0-9_-]*"
+
+    def start(self):
+        pos = self.mark()
+        if head := self.triple():
+            if self.expect(':') and (num := self.expect(self.NUMBER)):
+                if self.expect('/') and (den := self.expect(self.NUMBER)):
+                    if self.expect(':-') and (body := self.body()):
+                        if self.expect(r'\.'):
+                            return Path(head, eval(num), eval(den), body)
+
+        self.reset(pos)
+        return None
+
+    def body(self):
+        pos = self.mark()
+        if triple := self.triple():
+            result = [triple]
+            while True:
+                pos = self.mark()
+                if not self.expect(',') or not (triple := self.triple()):
+                    self.reset(pos)
+                    break
+                result.append(triple)
+            return result
+
+        self.reset(pos)
+        return None
+
+    def triple(self) -> Triple | None:
+        pos = self.mark()
+        if (rel := self.expect(self.CONSTANT)) and self.expect(r'\('):
+            if (src := self.literal()) and self.expect(','):
+                if (tgt := self.literal()) and self.expect(r'\)'):
+                    return Triple(src, rel, tgt)
+
+        self.reset(pos)
+        return None
+
+    def literal(self):
+        return self.expect(self.CONSTANT) or self.expect(self.VARIABLE)
 
 
 class Triple(NamedTuple):
@@ -37,17 +132,8 @@ class Triple(NamedTuple):
     def replace(self, subst: dict[str, str]) -> Triple:
         return Triple(self.convert(self.source, subst), self.relation, self.convert(self.target, subst))
 
-    def get_subst(self, const: Triple) -> dict[str, str]:
-        result = {}
-        if self.source[0].isupper():
-            result.setdefault(self.source, const.source)
-        else:
-            result.setdefault(self.source, self.source)
-        if self.target[0].isupper():
-            result.setdefault(self.target, const.target)
-        else:
-            result.setdefault(self.target, self.target)
-        return result
+    def subst(self, subst: dict[str, str]) -> Triple:
+        return Triple(subst.get(self.source, self.source), self.relation, subst.get(self.target, self.target))
 
 
 class Sample(NamedTuple):
@@ -94,6 +180,8 @@ class Path(NamedTuple):
     """ A path is a sequence of consecutive triples.
     """
     head: Triple
+    correct_samples: int
+    total_samples: int
     body: list[Triple]
 
     def __hash__(self) -> int:
@@ -108,9 +196,29 @@ class Path(NamedTuple):
 
     def __repr__(self):
         if not self.body:
-            return f"{repr(self.head)}."
+            return f"{repr(self.head)} : {self.correct_samples} / {self.total_samples}."
 
-        return f"{repr(self.head)} :- {", ".join(repr(a) for a in self.body)}."
+        body = ", ".join(repr(a) for a in self.body)
+
+        return f"{repr(self.head)} : {self.correct_samples} / {self.total_samples} :- {body}."
+
+    @property
+    def confidence(self) -> float:
+        return self.correct_samples / self.total_samples
+
+    def infer(self, index: Index, k: list[Triple] = None, s: dict[str, str] = None) -> Generator[Path, None, None]:
+        k = k or []
+        if len(k) == len(self.body):
+            yield Path(self.head.subst(s), self.correct_samples, self.total_samples, k)
+        else:
+            s = s or {}
+            atom = self.body[len(k)].subst(s)
+            for triple in index.match(atom):
+                if atom.source[0].isupper():
+                    s.setdefault(atom.source, triple.source)
+                if atom.target[0].isupper():
+                    s.setdefault(atom.target, triple.target)
+                yield from self.infer(index, [*k, triple], s)
 
 
 class RandomWalk(NamedTuple):
@@ -247,11 +355,11 @@ class Rule(NamedTuple):
     def create(path: RandomWalk, subst: dict[str, str] = None) -> Rule:
         return Rule(path.head.triple.replace(subst), [a.triple.replace(subst) for a in path.body])
 
-    def replace(self, subst: dict[str, str]) -> RandomWalk:
-        return RandomWalk(
-            self.head.replace(subst),
-            [atom.replace(subst) for atom in self.body]
-        )
+    # def replace(self, subst: dict[str, str]) -> RandomWalk:
+    #     return RandomWalk(
+    #         self.head.replace(subst),
+    #         [atom.replace(subst) for atom in self.body]
+    #     )
 
 
 class KnowledgeGraph(NamedTuple):
@@ -410,7 +518,7 @@ class Index(NamedTuple):
 
         return path
 
-    def find(self, atom: Triple) -> Generator[Triple, None, None]:
+    def match(self, atom: Triple) -> Generator[Triple, None, None]:
         if is_constant(atom.source):
             triples = self.by_relation_source.get(atom.relation, {}).get(atom.source, [])
             if is_constant(atom.target):
@@ -423,17 +531,17 @@ class Index(NamedTuple):
         for triple in triples:
             yield triple
 
-    def query(self, rule: Rule, subst: dict[str, str] = None, pos: int = None) -> Generator[RandomWalk, None, None]:
-        pos = pos or 0
-        if pos >= len(rule):
-            yield rule.replace(subst)
-        else:
-            subst = subst or {}
-            for triple in self.find(rule.body[pos].triple):
-                triple = triple.replace(subst)
-                # if pos <= 0 or rule.body[pos - 1].get_destination() == rule.body[pos].get_origin():
-                subst.update(rule.body[pos].triple.get_subst(triple))
-                yield from self.query(rule, subst, pos + 1)
+    # def query(self, rule: Rule, subst: dict[str, str] = None, pos: int = None) -> Generator[RandomWalk, None, None]:
+    #     pos = pos or 0
+    #     if pos >= len(rule):
+    #         yield rule.replace(subst)
+    #     else:
+    #         subst = subst or {}
+    #         for triple in self.find(rule.body[pos].triple):
+    #             triple = triple.replace(subst)
+    #             # if pos <= 0 or rule.body[pos - 1].get_destination() == rule.body[pos].get_origin():
+    #             subst.update(rule.body[pos].triple.get_subst(triple))
+    #             yield from self.query(rule, subst, pos + 1)
 
 
 class Codex:
@@ -447,9 +555,10 @@ class Codex:
             rules.add(path)
 
         filename = f"rules_{num}.pl"
-        logging.debug(f"Saving {len(rules)} rule/s to '{filename}'...")
         with open(filename, "w") as file:
-            rules.dump(file)
+            logging.debug(f"Saving {len(rules)} rule/s to '{filename}'...")
+            for rule in rules.export():
+                print(rule, file=file)
 
         return rules.filter(args.quality)
 
@@ -475,23 +584,6 @@ class Codex:
 
         return Codex(quality_rules)
 
-    def dump(self, fp: TextIO, key=None) -> None:
-        if key:
-            items = sorted(self.rules.items(), key=key)
-        else:
-            items = self.rules.items()
-        for rule, paths in items:
-            fp.write(f"{rule.head} : {self.count(paths)} / {len(paths)} :- {", ".join(repr(a) for a in rule.body)}.\n")
-
-    def evaluate(self):
-        result = {}
-        for rule, paths in self.rules.items():
-            confidence = sum(1 for p in paths if p.expected) / len(paths)
-            for ground in idx.query(rule):
-                result.setdefault(ground.head, {}).setdefault(ground, []).append(confidence)
-
-        return result
-
     def get_saturation(self, result: Codex) -> float:
         if not result.rules:
             return 0.0
@@ -504,6 +596,9 @@ class Codex:
             for path in paths:
                 if path not in repository:
                     repository.append(path)
+
+    def export(self) -> list[Path]:
+        return [Path(r.head, self.count(p), len(p), r.body) for r, p in self.rules.items()]
 
 
 def setup_logs() -> None:
@@ -530,19 +625,37 @@ def setup_logs() -> None:
 
 class Strategy:
 
-    def evaluate(self, index: Index, codex: Codex):
+    @classmethod
+    def aggregate(cls, index: Index, paths: list[Path]) -> dict[Triple, list[Path]]:
         result = {}
-        for rule in codex.rules:
-            for ground in index.query(rule):
-                result.setdefault(ground.head, {}).setdefault(ground, )
+        for path in paths:
+            for ground in path.infer(index):
+                result.setdefault(ground.head, []).append(ground)
 
+        return result
 
+    @classmethod
+    def apply(cls, aggregation: dict[Triple, list[Path]]):
+        return {a: cls.score(p) for a, p in aggregation.items()}
+
+    @staticmethod
+    def score(paths: list[Path]) -> float:
         raise NotImplementedError()
+
 
 class Maximum(Strategy):
 
-    def evaluate(self):
-        pass
+    @staticmethod
+    def score(paths: list[Path]) -> float:
+        return max(p.confidence for p in paths)
+
+
+class NoisyOR(Strategy):
+
+    @staticmethod
+    def score(paths: list[Path]) -> float:
+        return 1 - prod((1 - p.confidence) for p in paths)
+
 
 def parse_args(default: Sequence[str] = None) -> ap.Namespace:
     """Parse arguments from the command line and return them.
@@ -566,24 +679,17 @@ def parse_args(default: Sequence[str] = None) -> ap.Namespace:
     parser.add_argument("--relation", "-r", required=False, default=None, type=str,
                         help="The type of relation to learn")
 
+    parser.add_argument("--force", "-f", required=False, action='store_true', help="Force recomputing results")
+    parser.add_argument("--learn", "-l", required=True, type=str,
+                        help="File wjere to save the results of the learning.")
+
     args = parser.parse_args(args=default)
     logging.debug(f"Parsed args: {args}")
 
     return args
 
 
-def main(args: ap.Namespace) -> Codex:
-    logging.info(f"pyLomma")
-
-    if args.random_state:
-        logging.info(f"\nRandom-state set to {args.random_state}")
-        seed(args.random_state)
-
-    logging.info(f"\nLoading '{args.input}'...")
-    with open(args.input, "r") as file:
-        kg = KnowledgeGraph.load(file)
-        idx = Index.populate(kg)
-
+def learn(index: Index, args: ap.Namespace) -> Codex:
     logging.info(f"\n[{0.0:6.2f}%] {0:,} rule/s found")
 
     num, length, rules = 0, 2, Codex()
@@ -591,7 +697,7 @@ def main(args: ap.Namespace) -> Codex:
     with mp.Pool(processes=args.workers) as pool:
         while True:
             num += 1
-            result = pool.apply(Codex.discover, args=(num, idx, length, args))
+            result = pool.aggregate(Codex.discover, args=(num, index, length, args))
             if rules.get_saturation(result) >= args.saturation:
                 length += 1
 
@@ -615,28 +721,46 @@ if __name__ == '__main__':
         "-t", "30",
         "-r", "treats",
         # "-w", "2",
+        "-l", "rules.pl",
+        # "-f",
     ])
 
     mp.freeze_support()
 
-    res = main(args)
+    # LEARN -- APPLY -- EVAL -- EXPLAIN
 
-    ##### Call it "repository"?
-    ### Nice to have a place where to store rules, the triples that they can predict, the triples that were sampled
-    # notice that all these triples can be used to compute the confidence on the rule
-    ### the rules can be sorted by confidence
-    ### for each predictable triple, consider the confidence of all the rules that produce it
-    ### use strategies to combine them: maximum, noisyor
-    ### for each triple, get all the paths the rules that produce it can produce, combine them in a graph
+    logging.info(f"pyLomma")
 
-    # Might require to rename things...
-    ## Path being just a ground rule (triple, list[triple] for head and body)
-    ## Random Walk (when each triple has an inverse)
-    ## ???
+    if args.random_state:
+        logging.info(f"\nRandom-state set to {args.random_state}")
+        seed(args.random_state)
 
-    filename = "rules.pl"
-    logging.info(f"\nSaving {len(res)} rule/s to '{filename}'...")
-    with open(filename, "w") as file:
-        res.dump(file, key=lambda x: (-sum(1 for p in x[1] if p.expected) / len(x[1]), repr(x[0])))
+    logging.info(f"\nLoading graph from '{args.input}'...")
+    with open(args.input, "r") as file:
+        kg = KnowledgeGraph.load(file)
+        idx = Index.populate(kg)
+
+    if args.force or not os.path.exists(args.learn):
+        rules = learn(idx, args).export()
+        with open(args.learn, "w") as file:
+            logging.info(f"\nSaving {len(rules)} rule/s to '{args.learn}'...")
+            for rule in rules:
+                print(rule, file=file)
+    else:
+        parser = PathParser()
+        with open(args.learn, "r") as file:
+            logging.info(f"\nLoading rule/s from '{args.learn}'...")
+            rules = [parser.parse(line) for line in file]
+
+    aggregations = Maximum.aggregate(idx, rules)
+    for triple, paths in aggregations.items():
+        for i, path in enumerate(paths):
+            if i == 0:
+                print(triple, '~', path)
+            else:
+                print(' ' * len(repr(triple)), '~', path)
+    predictions = Maximum.apply(aggregations)
+    for triple, score in predictions.items():
+        print("*", triple, ":", score, "!!! New" if triple not in idx.triples else "")
 
     logging.info("\nDone.")

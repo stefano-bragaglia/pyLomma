@@ -1,8 +1,0 @@
-document ::= rule* EOF
-rule ::= atom : number / number := atom (, atom)* .
-atom = constant ( literal , literal )
-literal = constant | variable
-
-number = [0-9]*
-constant = [a-z_][a-zA-Z_-]*
-variable = [A-Z][a-zA-Z_-]*

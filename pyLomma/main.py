@@ -753,12 +753,11 @@ if __name__ == '__main__':
             rules = [parser.parse(line) for line in file]
 
     aggregations = Maximum.aggregate(idx, rules)
-    for triple, paths in aggregations.items():
-        for i, path in enumerate(paths):
-            if i == 0:
-                print(triple, '~', path)
-            else:
-                print(' ' * len(repr(triple)), '~', path)
+    with open('paths.pl', 'w') as file:
+        for paths in aggregations.values():
+            for path in paths:
+                print(path, file=file)
+
     predictions = Maximum.apply(aggregations)
     for triple, score in predictions.items():
         print("*", triple, ":", score, "!!! New" if triple not in idx.triples else "")

@@ -701,6 +701,7 @@ def learn(index: Index, args: ap.Namespace) -> Codex:
 
     num, length, rules = 0, 2, Codex()
     deadline = now() + args.time
+    # TODO: https://thinhdanggroup.github.io/subinterpreter/
     with mp.Pool(processes=args.workers) as pool:
         while True:
             num += 1

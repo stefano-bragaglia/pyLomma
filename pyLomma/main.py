@@ -143,7 +143,7 @@ class Sample(NamedTuple):
     its natural direction or not.
     """
 
-    triple: Triple
+    target: Triple
     inverse: bool
 
     def __hash__(self) -> int:
@@ -623,7 +623,7 @@ def setup_logs() -> None:
     logger.setLevel(level=logging.DEBUG)
 
 
-class Strategy:
+class Policy:
 
     @classmethod
     def aggregate(cls, index: Index, paths: list[Path]) -> dict[Triple, list[Path]]:
@@ -643,14 +643,14 @@ class Strategy:
         raise NotImplementedError()
 
 
-class Maximum(Strategy):
+class Maximum(Policy):
 
     @staticmethod
     def score(paths: list[Path]) -> float:
         return max(p.confidence for p in paths)
 
 
-class NoisyOR(Strategy):
+class NoisyOR(Policy):
 
     @staticmethod
     def score(paths: list[Path]) -> float:
@@ -681,7 +681,14 @@ def parse_args(default: Sequence[str] = None) -> ap.Namespace:
 
     parser.add_argument("--force", "-f", required=False, action='store_true', help="Force recomputing results")
     parser.add_argument("--learn", "-l", required=True, type=str,
-                        help="File wjere to save the results of the learning.")
+                        help="File where to save the results of the learning.")
+    parser.add_argument("--policy", "-p", required=True, type=str, choices=["maximum", "noisy-or"],
+                        help="Stategy to use to aggregate confidence.")
+
+    parser.add_argument("--apply", "-a", required=True, type=str,
+                        help="File where to save the results of the ranking.")
+
+    parser.add_argument("--verbose", "-vf", required=False, action='store_true', help="Make application more verbose.")
 
     args = parser.parse_args(args=default)
     logging.debug(f"Parsed args: {args}")
@@ -723,6 +730,9 @@ if __name__ == '__main__':
         # "-w", "2",
         "-l", "rules.pl",
         # "-f",
+        "-p", "noisy-or",
+        "-a", "ranking.csv",
+        "-v",
     ])
 
     mp.freeze_support()
@@ -752,14 +762,35 @@ if __name__ == '__main__':
             logging.info(f"\nLoading rule/s from '{args.learn}'...")
             rules = [parser.parse(line) for line in file]
 
-    aggregations = Maximum.aggregate(idx, rules)
+    aggregations = Policy.aggregate(idx, rules)
     with open('paths.pl', 'w') as file:
         for paths in aggregations.values():
             for path in paths:
                 print(path, file=file)
 
-    predictions = Maximum.apply(aggregations)
-    for triple, score in predictions.items():
-        print("*", triple, ":", score, "!!! New" if triple not in idx.triples else "")
+    match args.policy:
+        case "maximum":
+            logging.info("\nApplying scores using 'maximum' policy...")
+            predictions = Maximum.apply(aggregations)
+        case "noisy-or":
+            logging.info("\nApplying scores using 'noisy-or' policy...")
+            predictions = NoisyOR.apply(aggregations)
+        case _:
+            raise ValueError(f"Unexpected policy: {args.policy}")
+
+    with open(args.apply, 'w') as file:
+        logging.info(f"\nSaving ranking to '{args.apply}'...")
+        writer = csv.DictWriter(file, fieldnames=["target", "score", "new"])
+        writer.writeheader()
+        for target, score in predictions.items():
+            writer.writerow({
+                "target": target,
+                "score": score,
+                "new": target not in idx.triples,
+            })
+
+    if args.verbose or not args.apply:
+        for target, score in predictions.items():
+            logging.info(f"  {target}, {score:8.6f}, {target not in idx.triples}")
 
     logging.info("\nDone.")

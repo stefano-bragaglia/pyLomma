@@ -1,0 +1,5 @@
+target,score,new
+"treats(c1,d1)",1.0,False
+"treats(c3,d1)",1.0,True
+"treats(c1,d3)",1.0,True
+"treats(c3,d3)",1.0,False

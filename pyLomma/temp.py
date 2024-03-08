@@ -1,9 +1,70 @@
+import csv
+
 import networkx as nx
 from matplotlib import pyplot as plt
-
+from matplotlib import patches as ptc
 from main import PathParser
 
+
+def plot(graph: nx.Graph, title: str, filename: str = None) -> None:
+    plt.figure()
+    plt.title(title)
+
+    pos = nx.kamada_kawai_layout(graph)
+
+    max_edge_usage = max((graph.get_edge_data(*e).get('usages', 1) for e in graph.edges), default=1)
+    max_node_usage = max((graph.nodes[n].get('usages', 1) for n in graph.nodes), default=1)
+
+    edge_width = [1.0 + 2.0 / max_edge_usage * graph.get_edge_data(*e)['usages'] for e in graph.edges]
+    nx.draw_networkx_edges(graph, pos, width=edge_width, alpha=0.3)
+
+    edge_labels = {}
+    for s, t, r in graph.edges:
+        edge_labels.setdefault((s, t), set()).add(r)
+    edge_labels = {c: "\n".join(sorted(r)) for c, r in edge_labels.items()}
+    nx.draw_networkx_edge_labels(graph, pos, edge_labels=edge_labels, font_size=6)
+
+    types = ['Compounds', 'Diseases', 'Genes', 'Mechanisms of Action', 'Pathways']
+    node_types = sorted({n[0] for n in graph.nodes})
+    colors = ["#50514F", "#F25F5C", "#FFE066", "#247BA0", "#2C6E49"]
+
+    node_size = [int(300 + 500 / max_node_usage * graph.nodes[n]['usages']) for n in graph.nodes]
+    node_color = [colors[node_types.index(n[0]) % len(colors)] for n in graph.nodes]
+    nx.draw_networkx_nodes(graph, pos, node_size=node_size, node_color=node_color)
+
+    labels = {n: n if node_types.index(n[0]) % len(colors) == 0 else "" for n in graph.nodes}
+    nx.draw_networkx_labels(graph, pos, labels=labels, font_color="w")
+    labels = {n: n if node_types.index(n[0]) % len(colors) != 0 else "" for n in graph.nodes}
+    nx.draw_networkx_labels(graph, pos, labels=labels, font_color="k")
+
+    handles = [ptc.Patch(color=colors[i], label=types[i]) for i, _ in enumerate(node_types)]
+    plt.legend(handles=handles)
+    plt.tight_layout()
+    if filename:
+        plt.savefig(filename, bbox_inches='tight')
+    else:
+        plt.show()
+    plt.close()
+
+
 if __name__ == '__main__':
+    with open("../data/graph.csv", "r") as file:
+        G = nx.MultiGraph()
+        for atom in csv.DictReader(file):
+            for name in (atom['source'], atom['target']):
+                if G.has_node(name):
+                    usages = G.nodes[name]['usages'] + 1
+                else:
+                    usages = 1
+                G.add_node(name, usages=usages)
+            if G.has_edge(atom['source'], atom['target'], key=atom['relation']):
+                usages = G.get_edge_data(atom['source'], atom['target'], key=atom['relation'])['usages'] + 1
+            else:
+                usages = 1
+            G.add_edge(atom['source'], atom['target'], key=atom['relation'], usages=usages)
+
+        plot(G, "Toy Graph", f"../data/toy_graph.png")
+
     aggregation = {}
     parser = PathParser()
     with open('paths.pl', 'r') as file:
@@ -11,42 +72,22 @@ if __name__ == '__main__':
             path = parser.parse(line)
             aggregation.setdefault(path.head, []).append(path)
 
-    # print(aggregation)
-
     for target, paths in aggregation.items():
         G = nx.MultiGraph()
         for path in paths:
             for atom in path.body:
+                for name in (atom.source, atom.target):
+                    if G.has_node(name):
+                        usages = G.nodes[name]['usages'] + 1
+                    else:
+                        usages = 1
+                    G.add_node(name, usages=usages)
                 if G.has_edge(atom.source, atom.target, key=atom.relation):
-                    usages = G.get_edge_data(atom.source, atom.target, key=atom.relation)['usages']
+                    usages = G.get_edge_data(atom.source, atom.target, key=atom.relation)['usages'] + 1
                 else:
                     usages = 1
                 G.add_edge(atom.source, atom.target, key=atom.relation, usages=usages)
 
-        fig, ax = plt.subplots(figsize=(12, 12))
-
-        pos = nx.kamada_kawai_layout(G)
-
-        edgewidth = [len(G.get_edge_data(u, v)) for u, v in G.edges()]
-
-        nx.draw_networkx_edges(G, pos, alpha=0.3, width=edgewidth, edge_color="m")
-        nx.draw_networkx_nodes(G, pos,  node_color="#210070", alpha=0.9)  # node_size=nodesize,
-        label_options = {"ec": "k", "fc": "white", "alpha": 0.7}
-        nx.draw_networkx_labels(G, pos, font_size=14, bbox=label_options)
-
-        ax.text(
-            0.80,
-            0.10,
-            repr(target),
-            # horizontalalignment="center",
-            # transform=ax.transAxes,
-            # fontdict=font,
-        )
-
-        # nx.draw(G, pos=pos)
-        plt.show()
-        # print(G)
-        # break
-
+        plot(G, repr(target), f"../data/{target.source}_{target.relation}_{target.target}.png")
 
     print('Done.')

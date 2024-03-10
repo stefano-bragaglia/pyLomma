@@ -1,7 +1,9 @@
 .autoenv.zsh
-pyLomma/paper.py
+pyLomma/paths.pl
+pyLomma/ranking.csv
 pyLomma/rules.pl
-pylomma/rules_*.pl
+pyLomma/rules_*.pl
+pyLomma/simple_rules_*.pl
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

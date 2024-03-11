@@ -175,5 +175,5 @@ class RuleTest(unittest.TestCase):
             (self.path1, {"max": "max", "english": "Y"}, self.rule3),
         ]:
             with self.subTest("generalize", path=path, subst=subst, expected=expected):
-                result = Rule.create(path, subst)
+                result = Rule.score(path, subst)
                 assert result == expected, f"{expected} expeced, but {result} found"

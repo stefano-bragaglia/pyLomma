@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import csv
+import logging
+import os
+import sys
 from argparse import Namespace
+from math import prod
 from multiprocessing import cpu_count
+from multiprocessing import current_process
 from multiprocessing import freeze_support
 from multiprocessing import Pool
 from random import choice
@@ -10,6 +15,7 @@ from random import seed
 from time import time as now
 from typing import Generator
 from typing import NamedTuple
+from typing import TextIO
 
 
 class Triple(NamedTuple):
@@ -17,12 +23,18 @@ class Triple(NamedTuple):
     relation: str
     target: str
 
+    def __repr__(self) -> str:
+        return f"{self.relation}({self.source},{self.target})"
+
     @staticmethod
     def convert(value: str, subst: dict[str, str]) -> str:
         return subst.setdefault(value, f"A{2 + sum(1 for x in subst.values() if x.startswith("A"))}")
 
     def replace(self, subst: dict[str, str]) -> Triple:
         return Triple(self.convert(self.source, subst), self.relation, self.convert(self.target, subst))
+
+    def subst(self, subst: dict[str, str]) -> Triple:
+        return Triple(subst.get(self.source, self.source), self.relation, subst.get(self.target, self.target))
 
 
 class Sample(NamedTuple):
@@ -34,6 +46,9 @@ class Sample(NamedTuple):
 
     def get_destination(self) -> str:
         return self.triple.source if self.inverse else self.triple.target
+
+    def replace(self, subst: dict[str, str]) -> Sample:
+        return Sample(self.triple.replace(subst), self.inverse)
 
 
 class Path(NamedTuple):
@@ -49,6 +64,13 @@ class Path(NamedTuple):
 
     def __len__(self) -> int:
         return len(self.samples)
+
+    @staticmethod
+    def get_confidence(paths: set[Path]) -> float:
+        if not paths:
+            return 0.0
+
+        return sum(1 for p in paths if p.expected) / len(paths)
 
     def _c_subst(self) -> dict[str, str]:
         return {
@@ -96,41 +118,20 @@ class Path(NamedTuple):
 
         return True
 
-    def generate(self) -> Generator[Rule, None, None]:
+    def generate(self) -> Generator[Path, None, None]:
         if self.is_cyclic():
-            yield self.generalize(self._c_subst())
-            yield self.generalize(self._ac1x_subst())
-            yield self.generalize(self._ac1y_subst())
+            yield self.replace(self._c_subst())
+            yield self.replace(self._ac1x_subst())
+            yield self.replace(self._ac1y_subst())
         else:
-            yield self.generalize(self._ac1_subst())
-            yield self.generalize(self._ac2_subst())
+            yield self.replace(self._ac1_subst())
+            yield self.replace(self._ac2_subst())
 
-    def generalize(self, subst: dict[str, str]) -> Rule:
-        triples = [a.triple.replace(subst) for a in self.samples]
-
-        return Rule(triples[0], triples[1:])
+    def replace(self, subst: dict[str, str]) -> Path:
+        return Path(self.expected, [s.replace(subst) for s in self.samples])
 
 
 class Rule(NamedTuple):
-    head: Triple
-    body: list[Triple]
-
-    def __hash__(self) -> int:
-        result = hash(self.head)
-        for atom in self.body:
-            result *= hash(atom)
-
-        return result
-
-    @staticmethod
-    def get_confidence(paths: list[Path]) -> float:
-        if not paths:
-            return 0.0
-
-        return sum(1 for p in paths if p.expected) / len(paths)
-
-
-class Scoring(NamedTuple):
     head: Triple
     correct: int
     total: int
@@ -145,6 +146,29 @@ class Scoring(NamedTuple):
     @property
     def confidence(self) -> float:
         return self.correct / self.total if self.total else 0.0
+
+    @staticmethod
+    def score(path: Path, grounds: list[Path]) -> Rule:
+        return Rule(
+            path.samples[0].triple,
+            sum(1 for p in grounds if p.expected),
+            len(grounds),
+            [a.triple for a in path.samples[1:]]
+        )
+
+    def infer(self, index: Index, k: list[Triple] = None, s: dict[str, str] = None) -> Generator[Rule, None, None]:
+        k = k or []
+        if len(k) == len(self.body):
+            yield Rule(self.head.subst(s), self.correct, self.total, k)
+        else:
+            s = s or {}
+            atom = self.body[len(k)].subst(s)
+            for triple in index.match(atom):
+                if atom.source[0].isupper():
+                    s.setdefault(atom.source, triple.source)
+                if atom.target[0].isupper():
+                    s.setdefault(atom.target, triple.target)
+                yield from self.infer(index, [*k, triple], s)
 
 
 class Index(NamedTuple):
@@ -164,6 +188,21 @@ class Index(NamedTuple):
             raise ValueError("Invalid item")
 
         return elem in self.by_relation.get(elem.relation, [])
+
+    @staticmethod
+    def populate(fp: TextIO) -> Index:
+        index = Index({}, {}, {}, {}, {}, [])
+        for row in csv.DictReader(fp):
+            triple = Triple(**row)
+            if triple not in index.triples:
+                index.by_source.setdefault(triple.source, []).append(triple)
+                index.by_relation.setdefault(triple.relation, []).append(triple)
+                index.by_target.setdefault(triple.target, []).append(triple)
+                index.by_relation_source.setdefault(triple.relation, {}).setdefault(triple.source, []).append(triple)
+                index.by_relation_target.setdefault(triple.relation, {}).setdefault(triple.target, []).append(triple)
+                index.triples.append(triple)
+
+        return index
 
     def get_head(self, relation: str = None) -> Sample:
         if relation:
@@ -210,64 +249,82 @@ class Index(NamedTuple):
 
         return path
 
+    def match(self, atom: Triple) -> Generator[Triple, None, None]:
+        if is_constant(atom.source):
+            triples = self.by_relation_source.get(atom.relation, {}).get(atom.source, [])
+            if is_constant(atom.target):
+                triples = [atom] if atom in triples else []
+        elif is_constant(atom.target):
+            triples = self.by_relation_target.get(atom.relation, {}).get(atom.target, [])
+        else:
+            triples = self.by_relation.get(atom.relation, [])
 
-def _discover(index, length, relation) -> dict[Rule, set[Path]]:
-    print(f'myfunc is called with {index}, {length}')
-    seed(42)
-
-    codex = Codex()
-    deadline = now() + 3
-    while True:
-        path = index.sample(length, relation)
-        if path:
-            for rule in path.generate():
-                codex.setdefault(rule, set()).add(path)
-
-        if now() >= deadline:
-            break
-
-    return codex
+        for triple in triples:
+            yield triple
 
 
-class Codex(dict[Rule, set[Path]]):
+class Report(dict[Path, set[Path]]):
 
-    def get_saturation(self, other: Codex) -> float:
+    def get_saturation(self, other: Report) -> float:
         if not other:
             return 0.0
 
         return sum(1 for r in other if r in self) / len(other)
 
-    def merge(self, other: Codex) -> None:
+    def merge(self, other: Report) -> None:
         for rule, paths in other.items():
             self.setdefault(rule, set()).update(paths)
 
-
-def _update(x):
-    print(f'mycallback is called with {x}')
-
-    status.number += 1
-    with open(f"simple_rules_{status.number}.pl", "w") as file:
-        for rule, paths in x.items():
-            print(rule, file=file)
-            for path in paths:
-                print("%", path, file=file)
-            print(file=file)
-
-    current = Codex({r: p for r, p in x.items() if r.get_confidence(p) >= status.quality})
-    if current.get_saturation(status.rules) >= status.saturation:
-        status.saturate = True
-    status.rules.merge(current)
+    def filter(self, quality: float) -> Report:
+        return Report({r: p for r, p in self.items() if r.get_confidence(p) >= quality})
 
 
-def learn(index, args):
+class Policy:
+
+    @classmethod
+    def aggregate(cls, index: Index, rules: list[Rule]) -> dict[Triple, list[Rule]]:
+        result = {}
+        for rule in rules:
+            for ground in rule.infer(index):
+                result.setdefault(ground.head, []).append(ground)
+
+        return result
+
+    @classmethod
+    def apply(cls, aggregation: dict[Triple, list[Rule]]):
+        return {a: cls.score(p) for a, p in aggregation.items()}
+
+    @staticmethod
+    def score(grounds: list[Rule]) -> float:
+        raise NotImplementedError()
+
+
+class Maximum(Policy):
+
+    @staticmethod
+    def score(grounds: list[Rule]) -> float:
+        return max(p.confidence for p in grounds)
+
+
+class NoisyOR(Policy):
+
+    @staticmethod
+    def score(grounds: list[Rule]) -> float:
+        return 1 - prod((1 - p.confidence) for p in grounds)
+
+
+def is_constant(value: str) -> bool:
+    return value[0].islower()
+
+
+def learn(index: Index, args: Namespace) -> list[Rule]:
     length = 2
     with Pool(args.workers) as pool:
-        deadline = now() + 10
+        deadline = now() + args.duration
         while True:
-            print(length)
             args.saturate = False
             results = [
-                pool.apply_async(_discover, args=(index, length, args.relation), callback=_update)
+                pool.apply_async(_discover, args=(index, length, args), callback=_update)
                 for _ in range(args.workers)
             ]
             for r in results:
@@ -279,37 +336,125 @@ def learn(index, args):
             if now() >= deadline:
                 break
 
-    for rule, paths in args.rules.items():
-        print("*", rule)
-        for path in paths:
-            print(" ", "|", path)
-        print()
+    rules = [Rule.score(r, p) for r, p in args.rules.items()]
+    with open("rules.pl", "w") as file:
+        for score in sorted(rules, key=lambda x: (-x.confidence, repr(x.head), repr(x.body))):
+            print(score, file=file)
+
+    return rules
+
+
+def _discover(index: Index, length: int, args: Namespace) -> dict[Path, set[Path]]:
+    seed(args.random_state)
+
+    logging.info(f"\nSampling session '{args.number}.{current_process().pid}'...")
+
+    codex = Report()
+    deadline = now() + args.span
+    while True:
+        path = index.sample(length, args.relation)
+        if path:
+            for rule in path.generate():
+                codex.setdefault(rule, set()).add(path)
+
+        if now() >= deadline:
+            break
+
+    return codex
+
+
+def _update(report: Report) -> None:
+    logging.info(f"\nCallback session '{args.number}.{current_process().pid}'...")
+
+    args.number += 1
+    with open(f"simple_rules_{args.number}.pl", "w") as file:
+        for rule, paths in report.items():
+            print(rule, file=file)
+            for path in paths:
+                print("%", path, file=file)
+            print(file=file)
+
+    current = report.filter(args.quality)
+    if current.get_saturation(args.rules) >= args.saturation:
+        args.saturate = True
+    args.rules.merge(current)
+
+
+def setup_logs() -> None:
+    """ Configure `logging` to redirect any log to a file and to the standard output.
+    """
+    stream_handler = logging.StreamHandler(stream=sys.stdout)
+    stream_handler.setFormatter(fmt=logging.Formatter(fmt="%(message)s"))
+    stream_handler.setLevel(level=logging.INFO)
+
+    file_handler = logging.FileHandler(
+        filename=os.path.join(os.getcwd(), "pyLomma.log"),
+        encoding="UTF-8",
+        mode="w",
+    )
+    file_handler.setFormatter(fmt=logging.Formatter(
+        fmt="%(asctime)s  %(levelname)-8s  p%(process)s@%(filename)s:%(lineno)d - %(message)s"))
+    file_handler.setLevel(level=logging.DEBUG)
+
+    logger = logging.getLogger()
+    logger.addHandler(hdlr=stream_handler)
+    logger.addHandler(hdlr=file_handler)
+    logger.setLevel(level=logging.DEBUG)
 
 
 if __name__ == '__main__':
-    seed(42)
-    freeze_support()
+    setup_logs()
 
-    status = Namespace(
+    args = Namespace(
+        apply='ranking.csv',
+        duration=30,
+        input='../data/graph.csv',
         number=0,
+        policy='noisy-or',
         quality=0.25,
+        random_state=42,
         relation='treats',
-        rules=Codex(),
+        rules=Report(),
         saturate=False,
         saturation=0.5,
+        span=10,
         workers=cpu_count(),
     )
 
-    with open("../data/graph.csv", "r") as file:
-        index = Index({}, {}, {}, {}, {}, [])
-        for row in csv.DictReader(file):
-            triple = Triple(**row)
-            if triple not in index.triples:
-                index.by_source.setdefault(triple.source, []).append(triple)
-                index.by_relation.setdefault(triple.relation, []).append(triple)
-                index.by_target.setdefault(triple.target, []).append(triple)
-                index.by_relation_source.setdefault(triple.relation, {}).setdefault(triple.source, []).append(triple)
-                index.by_relation_target.setdefault(triple.relation, {}).setdefault(triple.target, []).append(triple)
-                index.triples.append(triple)
+    freeze_support()
 
-    learn(index, status)
+    logging.info(f"pyLomma")
+
+    if args.random_state:
+        logging.info(f"\nRandom-state set to {args.random_state}")
+        seed(args.random_state)
+
+    logging.info(f"\nLoading graph from '{args.input}'...")
+    with open(args.input, "r") as file:
+        index = Index.populate(file)
+
+    rules = learn(index, args)
+
+    aggregations = Policy.aggregate(index, rules)
+    match args.policy:
+        case "maximum":
+            logging.info("\nApplying scores using 'maximum' policy...")
+            predictions = Maximum.apply(aggregations)
+        case "noisy-or":
+            logging.info("\nApplying scores using 'noisy-or' policy...")
+            predictions = NoisyOR.apply(aggregations)
+        case _:
+            raise ValueError(f"Unexpected policy: {args.policy}")
+
+    with open(args.apply, 'w') as file:
+        logging.info(f"\nSaving ranking to '{args.apply}'...")
+        writer = csv.DictWriter(file, fieldnames=["target", "score", "new"])
+        writer.writeheader()
+        for target, score in predictions.items():
+            writer.writerow({
+                "target": target,
+                "score": score,
+                "new": target not in index,
+            })
+
+    logging.info("\nDone.")

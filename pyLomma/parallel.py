@@ -318,8 +318,12 @@ def is_constant(value: str) -> bool:
 
 
 def learn(index: Index, args: Namespace) -> list[Rule]:
-    length = 2
+    logging.info(f"\nLearning rules (length: "
+                 f"min={args.min_length}, max-ac={args.max_acyclic_length}, max-c={args.max_cyclic_length})...")
+
+    length = 2  # args.min_length
     with Pool(args.workers) as pool:
+        logging.info(f"\n[{0.0:6.2f}%] {0:,} rule/s found")
         deadline = now() + args.duration
         while True:
             args.saturate = False
@@ -330,10 +334,13 @@ def learn(index: Index, args: Namespace) -> list[Rule]:
             for r in results:
                 r.wait()
             if args.saturate:
-                print('saturation!!!')
                 length = length + 1
+                logging.info(f"\nResult set saturated: extending sampling length to '{length}'...")
 
-            if now() >= deadline:
+            time = now()
+            logging.info(
+                f"[{min(100, 100 - 100 * (deadline - time) / args.duration):6.2f}%] {len(args.rules):,} rule/s found")
+            if time >= deadline:
                 break
 
     rules = [Rule.score(r, p) for r, p in args.rules.items()]
@@ -345,26 +352,29 @@ def learn(index: Index, args: Namespace) -> list[Rule]:
 
 
 def _discover(index: Index, length: int, args: Namespace) -> dict[Path, set[Path]]:
+    setup_logs()
     seed(args.random_state)
+    logging.debug(f"\nSampling session '{args.number}.{current_process().pid}'...")
 
-    logging.info(f"\nSampling session '{args.number}.{current_process().pid}'...")
+    report = Report()
+    if length < args.max_acyclic_length or length < args.max_cyclic_length:
+        deadline = now() + args.span
+        while True:
+            path = index.sample(length, args.relation)
+            if path:
+                for rule in path.generate():
+                    max_limit = args.max_cyclic_length if rule.is_cyclic() else args.max_acyclic_length
+                    if len(rule) < max_limit:
+                        report.setdefault(rule, set()).add(path)
 
-    codex = Report()
-    deadline = now() + args.span
-    while True:
-        path = index.sample(length, args.relation)
-        if path:
-            for rule in path.generate():
-                codex.setdefault(rule, set()).add(path)
+            if now() >= deadline:
+                break
 
-        if now() >= deadline:
-            break
-
-    return codex
+    return report
 
 
 def _update(report: Report) -> None:
-    logging.info(f"\nCallback session '{args.number}.{current_process().pid}'...")
+    logging.debug(f"\nCallback session '{args.number}.{current_process().pid}'...")
 
     args.number += 1
     with open(f"simple_rules_{args.number}.pl", "w") as file:
@@ -409,15 +419,19 @@ if __name__ == '__main__':
         apply='ranking.csv',
         duration=30,
         input='../data/graph.csv',
+        max_acyclic_length=4,
+        max_cyclic_length=11,
+        min_length=3,
         number=0,
-        policy='noisy-or',
+        policy='maximum',
+        # policy='noisy-or',
         quality=0.25,
         random_state=42,
         relation='treats',
         rules=Report(),
         saturate=False,
         saturation=0.5,
-        span=10,
+        span=3,
         workers=cpu_count(),
     )
 

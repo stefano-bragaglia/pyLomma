@@ -4,6 +4,7 @@ import networkx as nx
 from matplotlib import pyplot as plt
 from matplotlib import patches as ptc
 from main import PathParser
+from main import Triple
 
 
 def plot(graph: nx.Graph, title: str, filename: str = None) -> None:
@@ -49,8 +50,12 @@ def plot(graph: nx.Graph, title: str, filename: str = None) -> None:
 
 if __name__ == '__main__':
     with open("../data/graph.csv", "r") as file:
+        triples = []
         G = nx.MultiGraph()
         for atom in csv.DictReader(file):
+            triple = Triple(**atom)
+            if triple not in triples:
+                triples.append(triple)
             for name in (atom['source'], atom['target']):
                 if G.has_node(name):
                     usages = G.nodes[name]['usages'] + 1
@@ -88,6 +93,6 @@ if __name__ == '__main__':
                     usages = 1
                 G.add_edge(atom.source, atom.target, key=atom.relation, usages=usages)
 
-        plot(G, repr(target), f"../data/{target.source}_{target.relation}_{target.target}.png")
+        plot(G, f"{target} {"(novel)" if target not in triples else ""}", f"../data/{target.source}_{target.relation}_{target.target}.png")
 
     print('Done.')

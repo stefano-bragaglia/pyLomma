@@ -321,7 +321,7 @@ def learn(index: Index, args: Namespace) -> list[Rule]:
     logging.info(f"\nLearning rules (length: "
                  f"min={args.min_length}, max-ac={args.max_acyclic_length}, max-c={args.max_cyclic_length})...")
 
-    length = 2  # args.min_length
+    length = args.min_length + 1
     with Pool(args.workers) as pool:
         logging.info(f"\n[{0.0:6.2f}%] {0:,} rule/s found")
         deadline = now() + args.duration
@@ -357,13 +357,13 @@ def _discover(index: Index, length: int, args: Namespace) -> dict[Path, set[Path
     logging.debug(f"\nSampling session '{args.number}.{current_process().pid}'...")
 
     report = Report()
-    if length < args.max_acyclic_length or length < args.max_cyclic_length:
+    if length < (args.max_acyclic_length + 1) or length < (args.max_cyclic_length + 1):
         deadline = now() + args.span
         while True:
             path = index.sample(length, args.relation)
             if path:
                 for rule in path.generate():
-                    max_limit = args.max_cyclic_length if rule.is_cyclic() else args.max_acyclic_length
+                    max_limit = (args.max_cyclic_length if rule.is_cyclic() else args.max_acyclic_length) + 1
                     if len(rule) < max_limit:
                         report.setdefault(rule, set()).add(path)
 
@@ -419,9 +419,9 @@ if __name__ == '__main__':
         apply='ranking.csv',
         duration=30,
         input='../data/graph.csv',
-        max_acyclic_length=4,
-        max_cyclic_length=11,
-        min_length=3,
+        max_acyclic_length=10,
+        max_cyclic_length=10,
+        min_length=2,
         number=0,
         policy='maximum',
         # policy='noisy-or',
@@ -450,6 +450,11 @@ if __name__ == '__main__':
     rules = learn(index, args)
 
     aggregations = Policy.aggregate(index, rules)
+    with open('paths.pl', 'w') as file:
+        for paths in aggregations.values():
+            for path in paths:
+                print(path, file=file)
+
     match args.policy:
         case "maximum":
             logging.info("\nApplying scores using 'maximum' policy...")

@@ -1,4 +1,6 @@
 .autoenv.zsh
+data/hetionet.csv
+data/hetionet-v1.0-edges.csv
 pyLomma/paths.pl
 pyLomma/ranking.csv
 pyLomma/rules.pl
@@ -165,3 +167,10 @@ cython_debug/
 #  and can be added to the global gitignore or merged into this file.  For a more nuclear
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
+!/data/hetionet.csv
+!/data/hetionet-v1.0-edges.csv
+!/data/hetionet.csv
+
+!/data/hetionet-v1.0-edges.csv
+/data/hetionet.csv
+/data/hetionet-v1.0-edges.csv

@@ -419,6 +419,7 @@ if __name__ == '__main__':
         apply='ranking.csv',
         duration=30,
         input='../data/graph.csv',
+        # input='../data/hetionet.csv',
         max_acyclic_length=10,
         max_cyclic_length=10,
         min_length=2,

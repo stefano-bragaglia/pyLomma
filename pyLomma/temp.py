@@ -26,7 +26,7 @@ def plot(graph: nx.Graph, title: str, filename: str = None) -> None:
     nx.draw_networkx_edge_labels(graph, pos, edge_labels=edge_labels, font_size=6)
 
     types = ['Compounds', 'Diseases', 'Genes', 'Mechanisms of Action', 'Pathways']
-    node_types = sorted({n[0] for n in graph.nodes})
+    node_types = sorted({n.split("__", maxsplit=1)[0] for n in graph.nodes})
     colors = ["#50514F", "#F25F5C", "#FFE066", "#247BA0", "#2C6E49"]
 
     node_size = [int(300 + 500 / max_node_usage * graph.nodes[n]['usages']) for n in graph.nodes]

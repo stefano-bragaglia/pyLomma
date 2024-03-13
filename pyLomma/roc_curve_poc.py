@@ -41,7 +41,8 @@ def generate(args: Namespace) -> list[dict[str, any]]:
         rows.setdefault(atom, {
             "atom": atom,
             "score": score,
-            "target": score + args.factor * (2 * random() - 1) >= args.rate if args.rate else choice([False, True])
+            "target": max(0.0, min(1.0, score + args.factor * (2 * random() - 1) >= args.rate))
+            if args.rate else choice([False, True])
         })
 
     return list(rows.values())

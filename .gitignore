@@ -1,6 +1,7 @@
 .autoenv.zsh
-data/hetionet.csv
-data/hetionet-v1.0-edges.csv
+data/hetionet-v1.0-edges.sif.gz
+data/hetionet-v1.0-metagraph.json
+data/hetionet-v1.0-nodes.tsv
 pyLomma/paths.pl
 pyLomma/ranking.csv
 pyLomma/rules.pl

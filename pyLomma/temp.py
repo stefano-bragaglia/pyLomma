@@ -6,7 +6,7 @@ from matplotlib import patches as ptc
 from main import PathParser
 from main import Triple
 
-
+# TODO: convert to iGraph, if possible!
 def plot(graph: nx.Graph, title: str, filename: str = None) -> None:
     plt.figure()
     plt.title(title)

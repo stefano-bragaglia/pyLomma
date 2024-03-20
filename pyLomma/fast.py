@@ -11,11 +11,23 @@ import pandas as pd
 from sklearn.model_selection import train_test_split
 
 from utils import as_filename
+from utils import assign
 from utils import benchmark
 from utils import download
+from utils import generalize
+from utils import prettify
+
+
+def norm(value: str) -> str:
+    if '::' not in value:
+        return value.lower()
+
+    kind, ident = value.split('::', maxsplit=1)
+    return f'{ident.lower()}::{kind}'
 
 
 class Graph:
+
 
     @staticmethod
     def hetionet(folder: str) -> Graph:
@@ -29,12 +41,15 @@ class Graph:
         url = 'https://github.com/hetio/hetionet/raw/main/hetnet/tsv/hetionet-v1.0-edges.sif.gz'
         download(folder, url, 'b4b2ab8890d403c2077a65e0f34fc4d9')
         edges = pd.read_csv(as_filename(folder, url), sep='\t').drop_duplicates()
+        edges.insert(0, 'source', edges.pop('source').apply(lambda x: norm(x)))
+        edges.insert(1, 'target', edges.pop('target').apply(lambda x: norm(x)))
         edges.insert(2, 'kind', edges.pop('metaedge').apply(lambda x: convert[x]))
 
         url = 'https://github.com/hetio/hetionet/raw/main/hetnet/tsv/hetionet-v1.0-nodes.tsv'
         download(folder, url, 'd2789861ab5b977dcee3c23ac9c9f7ce')
         nodes = pd.read_csv(as_filename(folder, url), sep='\t').drop_duplicates()
         nodes = nodes.rename(columns={'id': 'name', 'name': 'label'})
+        nodes.insert(0, 'name', nodes.pop('name').apply(lambda x: norm(x)))
 
         return Graph(edges, nodes)
 
@@ -61,7 +76,7 @@ class Graph:
 
             return result
 
-    def sample(self, examples: pd.DataFrame, length: int) -> tuple[bool, list[tuple[str, str, str]]] | None:
+    def sample(self, examples: pd.DataFrame, length: int) -> tuple[bool, tuple[tuple[str, str, str], ...]] | None:
         assert list(examples.columns) == ['expected', 'source', 'target', 'kind']
 
         try:
@@ -86,18 +101,21 @@ class Graph:
         except ValueError | IndexError:
             return None
 
-        return expected, path
+        return expected, tuple(path)
 
     @staticmethod
-    def generalize(path: list[tuple[str, str, str]]) -> Generator[list[tuple[str, str, str]], None, None]:
+    def generate(path: tuple[tuple[str, str, str], ...]) -> Generator[tuple[tuple[str, str, str], ...], None, None]:
         origin = path[0][1] if path[0][0] in path[1] else path[0][0]
-        destination = path[-1][1] if path[-1][0] in path[-2] else path[-1][0]
+        destination = path[0][0] if path[0][0] in path[1] else path[0][1]
+        terminal = path[-1][1] if path[-1][0] in path[-2] else path[-1][0]
+
         if origin == destination:  # cyclic
-            pass
+            yield generalize(path, {origin: assign(origin, ch='Y'), destination: assign(destination, ch='X')})
+            yield generalize(path, {origin: origin, destination: assign(destination, ch='X')})
+            yield generalize(path, {origin: assign(origin, ch='Y'), destination: destination})
         else:
-            pass
-
-
+            yield generalize(path, {origin: origin, destination: assign(destination, ch='X'), terminal: terminal})
+            yield generalize(path, {origin: origin, destination: assign(destination, ch='X')})
 
 
 if __name__ == '__main__':
@@ -112,8 +130,9 @@ if __name__ == '__main__':
         found = g.sample(train, 3)
         if found:
             expected, path = found
-            for rule in g.generalize(path):
-                print(rule)
+            print(prettify(path))
+            for rule in g.generate(path):
+                print('*', prettify(rule))
 
         break
 

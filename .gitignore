@@ -2,6 +2,8 @@
 data/hetionet-v1.0-edges.sif.gz
 data/hetionet-v1.0-metagraph.json
 data/hetionet-v1.0-nodes.tsv
+pyLomma/hetionet-v1.0-edges.csv
+pyLomma/hetionet-v1.0-nodes.csv
 pyLomma/paths.pl
 pyLomma/ranking.csv
 pyLomma/rules.pl

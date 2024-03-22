@@ -688,7 +688,7 @@ def parse_args(default: Sequence[str] = None) -> ap.Namespace:
     parser.add_argument("--apply", "-a", required=True, type=str,
                         help="File where to save the results of the ranking.")
 
-    parser.add_argument("--verbose", "-vf", required=False, action='store_true', help="Make application more verbose.")
+    parser.add_argument("--verbose", "-v", required=False, action='store_true', help="Make application more verbose.")
 
     args = parser.parse_args(args=default)
     logging.debug(f"Parsed args: {args}")

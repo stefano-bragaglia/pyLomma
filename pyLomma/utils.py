@@ -20,23 +20,12 @@ class benchmark:
 
     def __exit__(self, *args):
         t = timer() - self.start
-        print(('%s: ' + self.fmt + ' seconds') % (self.msg, t))
+        print(f'{self.msg} in {self.fmt % (t)}s')
         self.time = t
 
 
 def as_filename(folder: str, url: str) -> str:
     return os.path.join(folder, os.path.basename(urlparse(url).path))
-
-
-def assign(value: str, subst: dict[str, str] = None, ch: str = None) -> str:
-    assert ch is None or is_variable(ch)
-    count = 2 + sum(1 for x in (subst or {}).values() if is_variable(x))
-    marker = ch or f'A{count}'
-    if '::' not in value:
-        return marker
-
-    _, kind = value.split('::', maxsplit=1)
-    return f'{marker}::{kind}'
 
 
 def download(folder: str, url: str, digest: str) -> None:
@@ -49,23 +38,9 @@ def download(folder: str, url: str, digest: str) -> None:
         print(f"* Got '{filename}' ({md5(fullname)})")
 
 
-def generalize(path: tuple[tuple[str, str, str], ...], subst: dict[str, str]) -> tuple[tuple[str, str, str], ...]:
-    return tuple(
-        (subst.setdefault(s, assign(s, subst)), subst.setdefault(t, assign(t, subst)), k)
-        for s, t, k in path
-    )
-
-
 def md5(filename: str) -> str:
     with open(filename, 'rb') as f:
         return hashlib.file_digest(f, 'md5').hexdigest()
-
-
-def is_variable(value: str) -> bool:
-    if '::' in value:
-        value, _ = value.split('::', maxsplit=1)
-
-    return value[0].isupper() or value[0] == '_'
 
 
 def prettify(atoms: tuple[tuple[str, str, str], ...]) -> str:
